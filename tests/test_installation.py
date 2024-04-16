@@ -1,7 +1,7 @@
 def test_tpu_stuff_works():
-    import numpy as np
     import jax
     import jax.numpy as jnp
+    import numpy as np
     
     a = np.array([1, 2, 3]) + 1
     b = jnp.array([-4, -5, -6])

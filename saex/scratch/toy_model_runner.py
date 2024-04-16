@@ -3,8 +3,8 @@ from typing import Any, cast
 
 import einops
 import jax.numpy as jnp
-
 import wandb
+
 from saex.toy_models import Config as ToyConfig
 from saex.toy_models import Model as ToyModel
 

@@ -4,7 +4,7 @@ Sparse autoencoders in Jax.
 ## Running
 Toy model:
 ```bash
-poetry run python -m saex.toy_model_runner
+JAX_PLATFORMS=cpu python -m saex.toy_models
 ```
 
 Tests:
@@ -27,5 +27,6 @@ echo 'export PATH="$PYENV_ROOT/versions/3.12.3/bin:$PYENV_ROOT/bin:$PATH"' >> ~/
 poetry env use 3.12
 poetry lock
 poetry install
+poetry shell
 ```
 I think it should be possible to set up a development environment without installing pyenv on tpu-ubuntu2204. 
