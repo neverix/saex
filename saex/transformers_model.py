@@ -5,13 +5,18 @@ import transformers
 
 
 class TransformersModel(object):
+    # Extracts features from the residual stream
+
     def __init__(self, config: "TransformersModelConfig"):
         self.config = config
         self._model = transformers.FlaxAutoModel.from_pretrained(config.model_name_or_path)
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path)
+        print(self._tokenizer.pad_token)
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
         self._cache = (None, None)
 
-    def digest(self, texts):
+    def __call__(self, texts):
         tokens = self._tokenizer(texts, return_tensors="jax", padding=True, truncation=True)
         outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
         hidden_states = outputs.hidden_states[self.config.layer]

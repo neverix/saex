@@ -11,7 +11,7 @@ class IterableDatasetConfig:
 
 
 def create_iterable_dataset(config: IterableDatasetConfig):
-    dataset = datasets.load_dataset(config.dataset_name)[config.split]
+    dataset = datasets.load_dataset(config.dataset_name, streaming=True)[config.split]
     
     def generator():
         for sample in dataset:
