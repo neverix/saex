@@ -171,14 +171,14 @@ class SAE(eqx.Module):
         
         return updated
     
-    def normalize_w_dec(self, w_dec):
+    def normalize_w_dec(self, w_dec, eps=1e-6):
         if self.config.restrict_dec_norm == "exact":
-            return w_dec / jnp.linalg.norm(w_dec, axis=-1, keepdims=True)
+            return w_dec / (eps + jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         elif self.config.restrict_dec_norm == "lte":
-            return w_dec / jnp.maximum(1, jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
+            return w_dec / jnp.maximum(1, eps + jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         return w_dec
     
-    def compute_ghost_losses(self, state, activations, reconstructions, pre_relu, eps=1e-6):
+    def compute_ghost_losses(self, state, activations, reconstructions, pre_relu, eps=1e-3):
         dead = state.get(self.time_since_fired) > self.config.dead_after
         post_exp = jnp.exp(pre_relu) * dead * self.s
         ghost_recon = post_exp @ self.W_dec

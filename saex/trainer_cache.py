@@ -114,6 +114,7 @@ class BufferTrainer(object):
                     + [optax.cosine_decay_schedule(1, scheduler_cycle) for _ in range(n_cycles)],
                     boundaries=[self.config.scheduler_warmup + i * scheduler_cycle for i in range(n_cycles)]),
             ),
+            optax.zero_nans(),
         )
         opt_state = optimizer.init(sae_params)
         
@@ -178,12 +179,12 @@ if __name__ == "__main__":
             expansion_factor=32,
             use_encoder_bias=False,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="zeros",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
             use_ghost_grads=True,
-            dead_after=200,
+            dead_after=50,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
