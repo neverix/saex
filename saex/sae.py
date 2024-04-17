@@ -1,15 +1,19 @@
-import random
+from collections import namedtuple
+from dataclasses import dataclass
+from typing import Dict, Literal, NamedTuple
 
+from functools import partial
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array, Float, PyTree
 
-from typing import Literal, Dict
-from dataclasses import dataclass
-from collections import namedtuple
+from . import utils
+from .geometric_median import geometric_median
 
 
-@dataclass
+@dataclass(frozen=True)
 class SAEConfig:
     n_dimensions: int
     sparsity_coefficient: float
@@ -17,38 +21,42 @@ class SAEConfig:
 
     expansion_factor: int = 32
     decoder_init_method: Literal["random", "orthogonal", "pseudoinverse"] = "random"
-    dec_bias_init_steps: int = 100
+    decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
+    loss_tracking_epsilon: float = 0.05
 
-class SAEOutput(namedtuple):
+class SAEOutput(NamedTuple):
     output: jax.Array
     loss: jax.Array
     losses: Dict[str, jax.Array]
     activations: Dict[str, jax.Array]
-    state: eqx.nn.State
-
 
 class SAE(eqx.Module):
     config: SAEConfig
+    d_hidden: int
+    
     W_enc: jax.Array
     b_enc: jax.Array
     s: jax.Array
     W_dec: jax.Array
     b_dec: jax.Array
+    
     time_since_fired: eqx.nn.StateIndex
     num_steps: eqx.nn.StateIndex
-    last_input: eqx.nn.StateIndex
+    avg_loss_reconstruction: eqx.nn.StateIndex
+    avg_loss_sparsity: eqx.nn.StateIndex
+    avg_l0: eqx.nn.StateIndex
 
     def __init__(self, config, key=None):
         if key is None:
-            key = jax.random.PRNGKey(0)
+            key = utils.get_key()
         key, w_enc_subkey, w_dec_subkey = jax.random.split(key, 3)
         self.config = config
         self.d_hidden = config.n_dimensions * config.expansion_factor
-        self.W_enc = jax.random.normal(w_enc_subkey, (self.d_hidden, config.n_dimensions))
+        self.W_enc = jax.random.normal(w_enc_subkey, (config.n_dimensions, self.d_hidden))
         self.b_enc = jnp.zeros((self.d_hidden,))
         self.s = jnp.ones((self.d_hidden,))
         self.b_dec = jnp.zeros((config.n_dimensions,))
@@ -57,25 +65,37 @@ class SAE(eqx.Module):
             self.W_dec = jax.random.normal(w_dec_subkey, (self.d_hidden, config.n_dimensions))
         elif config.decoder.init_method == "orthogonal":
             self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
-        else:
+        elif config.decoder.init_method == "pseudoinverse":
             self.W_dec = jnp.linalg.pinv(self.W_enc)
         
-        self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((config.expansion_factor,)))
+        self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.num_steps = eqx.nn.StateIndex(0)
-        self.last_input = eqx.nn.StateIndex(jnp.empty((config.batch_size, config.n_dimensions,)))
+        self.avg_loss_reconstruction = eqx.nn.StateIndex(0.0)
+        self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
+        self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
 
     def __call__(self, activations, state=None):
         pre_relu = activations @ self.W_enc + self.b_enc
         active = pre_relu > 0
         if state is not None:
             state = state.set(self.time_since_fired,
-                              jnp.where(active, 0, state.get(self.time_since_fired) + 1))
+                              jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
             state = state.set(self.num_steps, state.get(self.num_steps) + 1)
         post_relu = jax.nn.relu(pre_relu)
         sparsity_loss = self.sparsity_loss(post_relu)
         hidden = post_relu * self.s
         out = hidden @ self.W_dec + self.b_dec
         reconstruction_loss = self.reconstruction_loss(out, activations)
+        if state is not None:
+            state = state.set(self.avg_loss_reconstruction,
+                              reconstruction_loss.mean() * self.config.loss_tracking_epsilon
+                              + state.get(self.avg_loss_reconstruction) * (1 - self.config.loss_tracking_epsilon))
+            state = state.set(self.avg_loss_sparsity,
+                                sparsity_loss.mean(0) * self.config.loss_tracking_epsilon
+                                + state.get(self.avg_loss_sparsity) * (1 - self.config.loss_tracking_epsilon))
+            state = state.set(self.avg_l0,
+                                active.mean(0) * self.config.loss_tracking_epsilon
+                                + state.get(self.avg_l0) * (1 - self.config.loss_tracking_epsilon))
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.mean()
         output = SAEOutput(
             output=out,
@@ -84,9 +104,9 @@ class SAE(eqx.Module):
             activations={"pre_relu": pre_relu, "post_relu": post_relu, "hidden": hidden},
         )
         if state is None:
-            return output, 
+            return output 
         else:
-            return output, sparsity_loss, state
+            return output, state
 
     def sparsity_loss(self, activations):
         if self.config.sparsity_loss_type == "l1":
@@ -106,10 +126,8 @@ class SAE(eqx.Module):
         elif self.config.reconstruction_loss_type == "l1":
             return jnp.abs(output - target)
 
-    def apply_updates(self, state, updates):
-        if self.state.num_steps % self.config.dec_bias_init_steps == 0:
-            updates = eqx.tree_at(lambda update: update.b_dec, updates,
-                                  replace_fn=lambda b_dec_grad: b_dec_grad - b_dec_grad.mean())
+    @partial(eqx.filter_jit, donate="first")
+    def apply_updates(self, updates: PyTree[Float], state: eqx.nn.State, last_input: Float[Array, "b f"], last_output: SAEOutput, step: int):
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):
                 return W_dec_grad - jnp.einsum("h f, h -> h f",
@@ -120,12 +138,35 @@ class SAE(eqx.Module):
             updates = eqx.tree_at(lambda update: update.W_dec, updates,
                                   replace_fn=project_away)
         updated = eqx.apply_updates(self, updates)
+        
         w_dec_selector = lambda x: x.W_dec
-        if self.config.restrict_dec_norm == "exact":
-            updated = eqx.tree_at(w_dec_selector, updated, updated.W_dec / jnp.linalg.norm(updated.W_dec, axis=-1, keepdims=True))
-        elif self.config.restrict_dec_norm == "lte":
-            updated = eqx.tree_at(w_dec_selector, updated, updated.W_dec / jnp.maximum(1, jnp.linalg.norm(updated.W_dec, axis=-1, keepdims=True)))
+        updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
+        
+        # at the end of our first step
+        if step == 1:
+            if self.config.decoder_bias_init_method == "mean":
+                updated = eqx.tree_at(lambda self: self.b_dec, updated, jnp.mean(last_input - last_output.output, axis=0))
+            elif self.config.decoder_bias_init_method == "geom_median":
+                updated = eqx.tree_at(lambda self: self.b_dec, updated, geometric_median(last_input - last_output.output))
+        
         return updated
-
-    def is_trainable(self, value):
-        return eqx.is_array(value) and value.dtype.kind in "f"
+    
+    def normalize_w_dec(self, w_dec):
+        if self.config.restrict_dec_norm == "exact":
+            return w_dec / jnp.linalg.norm(w_dec, axis=-1, keepdims=True)
+        elif self.config.restrict_dec_norm == "lte":
+            return w_dec / jnp.maximum(1, jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
+        return w_dec
+        
+    
+    def get_stats(self, state):
+        num_steps = int(state.get(self.num_steps))
+        assert num_steps > 0
+        bias_corr = 1 - (1 - self.config.loss_tracking_epsilon) ** num_steps
+        return dict(
+            time_since_fired=np.asarray(state.get(self.time_since_fired)),
+            num_steps=num_steps,
+            loss_sparsity=np.asarray(state.get(self.avg_loss_sparsity) / bias_corr),
+            loss_reconstruction=np.asarray(state.get(self.avg_loss_reconstruction) / bias_corr),
+            l0=np.asarray(state.get(self.avg_l0)),
+        )

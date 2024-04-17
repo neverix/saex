@@ -24,7 +24,7 @@ class SAEToyModelRunnerConfig:
 
 
 def toy_model_sae_runner(cfg: SAEToyModelRunnerConfig):
-    """
+    """ 
     A runner for training an SAE on a toy model.
     """
     # Toy Model Config
