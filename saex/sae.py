@@ -112,15 +112,16 @@ class SAE(eqx.Module):
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.stat_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.stat_tracking_epsilon))
-        if state is None or not self.config.use_ghost_grads:
-            ghost_losses = {}
-        else:
+        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
+        losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
+        if state is not None and self.config.use_ghost_grads:
             ghost_losses = self.compute_ghost_losses(state, activations, out, pre_relu)
-        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean() + jnp.mean(sum(ghost_losses.values(), 0.0))
+            losses = {**losses, "ghost": ghost_losses}
+            loss = loss + ghost_losses.mean()
         output = SAEOutput(
             output=out,
             loss=loss,
-            losses={"reconstruction": reconstruction_loss, "sparsity": sparsity_loss, **ghost_losses},
+            losses=losses,
             activations={"pre_relu": pre_relu, "post_relu": post_relu, "hidden": hidden},
         )
         if state is None:
@@ -188,9 +189,9 @@ class SAE(eqx.Module):
         
         ghost_loss = self.reconstruction_loss(ghost_recon, activations)
         recon_loss = self.reconstruction_loss(reconstructions, activations)
-        ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))[:, None]
+        ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
         
-        return {"ghost": ghost_loss}
+        return ghost_loss
         
     
     def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):

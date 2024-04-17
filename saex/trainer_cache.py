@@ -143,7 +143,8 @@ class BufferTrainer(object):
             subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
                 self.buffer_state, subkeys).astype(jnp.float32)
-            (loss, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
+            batch = jnp.nan_to_num(batch)
+            (_, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
             updates, opt_state = optimizer.update(grad, opt_state, sae_params)
             self.sae = self.sae.apply_updates(updates, self.sae_state,
                                               batch, sae_output,
@@ -172,8 +173,7 @@ if __name__ == "__main__":
         dry_run_steps=0,
         sae_config=SAEConfig(
             n_dimensions=768,
-            # sparsity_coefficient=1e-3,
-            sparsity_coefficient=0,
+            sparsity_coefficient=1e-3,
             batch_size=2**14,
             expansion_factor=32,
             use_encoder_bias=False,
@@ -182,7 +182,8 @@ if __name__ == "__main__":
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
-            use_ghost_grads=False,
+            use_ghost_grads=True,
+            dead_after=200,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
