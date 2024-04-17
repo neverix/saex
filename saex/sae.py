@@ -19,8 +19,9 @@ class SAEConfig:
     sparsity_coefficient: float
     batch_size: int    
 
-    expansion_factor: int = 32,
+    expansion_factor: int = 32
     encoder_bias_init_mean: float = 0.0
+    use_encoder_bias: bool = False
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
@@ -47,7 +48,6 @@ class SAE(eqx.Module):
     
     time_since_fired: eqx.nn.StateIndex
     num_steps: eqx.nn.StateIndex
-    avg_loss_reconstruction: eqx.nn.StateIndex
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
 
@@ -78,15 +78,16 @@ class SAE(eqx.Module):
                     self.W_enc = jnp.linalg.pinv(self.W_dec)
         else:
             raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
-        
+    
         self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
-        self.num_steps = eqx.nn.StateIndex(0)
-        self.avg_loss_reconstruction = eqx.nn.StateIndex(0.0)
+        self.num_steps = eqx.nn.StateIndex(jnp.array(0))
         self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
 
     def __call__(self, activations, state=None):
-        pre_relu = activations @ self.W_enc + self.b_enc
+        pre_relu = activations @ self.W_enc
+        if self.config.use_encoder_bias:
+            pre_relu = pre_relu + self.b_enc
         active = pre_relu > 0
         if state is not None:
             state = state.set(self.time_since_fired,
@@ -98,9 +99,6 @@ class SAE(eqx.Module):
         out = hidden @ self.W_dec + self.b_dec
         reconstruction_loss = self.reconstruction_loss(out, activations)
         if state is not None:
-            state = state.set(self.avg_loss_reconstruction,
-                              reconstruction_loss.mean() * self.config.stat_tracking_epsilon
-                              + state.get(self.avg_loss_reconstruction) * (1 - self.config.stat_tracking_epsilon))
             state = state.set(self.avg_loss_sparsity,
                                 sparsity_loss.mean(0) * self.config.stat_tracking_epsilon
                                 + state.get(self.avg_loss_sparsity) * (1 - self.config.stat_tracking_epsilon))
@@ -169,17 +167,17 @@ class SAE(eqx.Module):
         return w_dec
         
     
-    def get_stats(self, state):
-        num_steps = int(state.get(self.num_steps))
+    def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):
+        num_steps = state.get(self.num_steps)
         assert num_steps > 0
         bias_corr = 1 - (1 - self.config.stat_tracking_epsilon) ** num_steps
         time_since_fired = np.asarray(state.get(self.time_since_fired))
-        l0 = np.asarray(state.get(self.avg_l0)) / bias_corr
         return dict(
-            time_since_fired=time_since_fired,
-            num_steps=num_steps,
-            loss_sparsity=np.asarray(state.get(self.avg_loss_sparsity) / bias_corr),
-            loss_reconstruction=np.asarray(state.get(self.avg_loss_reconstruction) / bias_corr),
-            l0=l0,
-            pct_dead=(time_since_fired > 100).mean() * 100
+            loss=last_output.loss,
+            loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
+            loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
+            l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            max_time_since_fired=int(time_since_fired.max()),
+            pct_dead=float((time_since_fired > 100).mean() * 100),
+            pct_var_explained=float(((last_output.output - last_input).var(0) / last_input.var(0)).mean() * 100)
         )

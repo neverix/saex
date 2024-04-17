@@ -3,7 +3,7 @@ Sparse autoencoders in Jax.
 
 ## Running
 ```bash
-# Train a small SAE. Requires at least 32GB of RAM.
+# Train a small SAE on the GPT-2 residual stream. Requires at least 32GB of RAM.
 poetry run python -m saex.trainer_cache
 # Generate data for a toy model
 JAX_PLATFORMS=cpu python -m saex.toy_models

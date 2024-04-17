@@ -62,7 +62,8 @@ class BufferTrainerConfig:
 
     lr: float
     scheduler_warmup: int
-    
+    scheduler_cycle: int
+
     train_iterations: int
     dry_run_steps: int
     sae_config: SAEConfig
@@ -100,24 +101,27 @@ class BufferTrainer(object):
         sae_params, sae_static = eqx.partition(self.sae, is_trainable)
         key = utils.get_key()
         
+        scheduler_cycle = self.config.scheduler_cycle
+        if not scheduler_cycle:
+            scheduler_cycle = self.config.train_iterations - self.config.scheduler_warmup
+        n_cycles = int(self.config.train_iterations / scheduler_cycle)
         optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
             optax.adam(self.config.lr),
             optax.scale_by_schedule(
-                optax.warmup_cosine_decay_schedule(0,
-                                                   self.config.scheduler_warmup,
-                                                   1,
-                                                   self.config.train_iterations,
-                                                   0)
+                optax.join_schedules(
+                    [optax.linear_schedule(0, 1, self.config.scheduler_warmup)]
+                    + [optax.cosine_decay_schedule(1, scheduler_cycle) for _ in range(n_cycles)],
+                    boundaries=[self.config.scheduler_warmup + i * scheduler_cycle for i in range(n_cycles)]),
             ),
         )
         opt_state = optimizer.init(sae_params)
         
         @partial(jax.jit, static_argnums=1)
         @partial(jax.value_and_grad, has_aux=True)
-        def loss_fn(sae_params, sae_static, batch):
+        def loss_fn(sae_params, sae_static, sae_state, batch):
             sae = eqx.combine(sae_params, sae_static)
-            sae_output, sae_state = sae(batch, self.sae_state)
+            sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
         for iteration in bar:
@@ -139,18 +143,15 @@ class BufferTrainer(object):
             subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
                 self.buffer_state, subkeys).astype(jnp.float32)
-            (loss, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, batch)
+            (loss, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
             updates, opt_state = optimizer.update(grad, opt_state, sae_params)
             self.sae = self.sae.apply_updates(updates, self.sae_state,
                                               batch, sae_output,
                                               int(self.sae_state.get(self.sae.num_steps)))
             sae_params, sae_static = eqx.partition(self.sae, is_trainable)
             
-            stats = self.sae.get_stats(self.sae_state)
-            bar.set_postfix({"reconstruction loss": float(stats["loss_reconstruction"]),
-                             "sparsity loss": float(stats["loss_sparsity"].sum()),
-                             "l0": float(stats["l0"].sum()), "pct_dead": float(stats["pct_dead"]),
-                             "loss": loss})
+            stats = self.sae.get_stats(self.sae_state, batch, sae_output)
+            bar.set_postfix(stats)
             # TODO: track in wandb or other logger:
             # - L0
             # - reconstruction loss
@@ -164,16 +165,16 @@ class BufferTrainer(object):
 if __name__ == "__main__":
     config = BufferTrainerConfig(
         n_dimensions=768,
-        lr=1e-3,
+        lr=1e-2,
         scheduler_warmup=20,
+        scheduler_cycle=10_000,
         train_iterations=100_000,
         dry_run_steps=0,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=1.6e-4,
+            sparsity_coefficient=1e-4,
             batch_size=2**14,
             expansion_factor=32,
-            encoder_bias_init_mean=0.,
             decoder_init_method="pseudoinverse",
             decoder_bias_init_method="mean",
             sparsity_loss_type="l1",
@@ -186,9 +187,7 @@ if __name__ == "__main__":
         cache_batch_size=32,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=9,
-            cache_n=1,
-            cache_hidden_states=True,
+            layer=1,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext"
