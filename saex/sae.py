@@ -19,27 +19,28 @@ class SAEConfig:
     sparsity_coefficient: float
     batch_size: int    
 
-    expansion_factor: int = 32
-    decoder_init_method: Literal["random", "orthogonal", "pseudoinverse"] = "random"
+    expansion_factor: int = 32,
+    encoder_bias_init_mean: float = 0.0
+    decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
-    loss_tracking_epsilon: float = 0.05
+    stat_tracking_epsilon: float = 0.05
 
 class SAEOutput(NamedTuple):
+    losses: Dict[str, jax.Array]
     output: jax.Array
     loss: jax.Array
-    losses: Dict[str, jax.Array]
     activations: Dict[str, jax.Array]
 
 class SAE(eqx.Module):
     config: SAEConfig
     d_hidden: int
+    b_enc: jax.Array
     
     W_enc: jax.Array
-    b_enc: jax.Array
     s: jax.Array
     W_dec: jax.Array
     b_dec: jax.Array
@@ -57,16 +58,23 @@ class SAE(eqx.Module):
         self.config = config
         self.d_hidden = config.n_dimensions * config.expansion_factor
         self.W_enc = jax.random.normal(w_enc_subkey, (config.n_dimensions, self.d_hidden))
-        self.b_enc = jnp.zeros((self.d_hidden,))
+        self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean)
         self.s = jnp.ones((self.d_hidden,))
         self.b_dec = jnp.zeros((config.n_dimensions,))
 
-        if config.decoder_init_method == "random":
-            self.W_dec = jax.random.normal(w_dec_subkey, (self.d_hidden, config.n_dimensions))
-        elif config.decoder.init_method == "orthogonal":
+        if config.decoder_init_method == "kaiming":
+            self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
+            self.W_dec = self.normalize_w_dec(self.W_dec)
+        elif config.decoder_init_method == "orthogonal":
             self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
-        elif config.decoder.init_method == "pseudoinverse":
-            self.W_dec = jnp.linalg.pinv(self.W_enc)
+            self.W_dec = self.normalize_w_dec(self.W_dec)
+        elif config.decoder_init_method == "pseudoinverse":
+            for _ in range(100):
+                self.W_dec = jnp.linalg.pinv(self.W_enc)
+                self.W_dec = self.normalize_w_dec(self.W_dec)
+                self.W_enc = jnp.linalg.pinv(self.W_dec)
+        else:
+            raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
         
         self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.num_steps = eqx.nn.StateIndex(0)
@@ -88,14 +96,14 @@ class SAE(eqx.Module):
         reconstruction_loss = self.reconstruction_loss(out, activations)
         if state is not None:
             state = state.set(self.avg_loss_reconstruction,
-                              reconstruction_loss.mean() * self.config.loss_tracking_epsilon
-                              + state.get(self.avg_loss_reconstruction) * (1 - self.config.loss_tracking_epsilon))
+                              reconstruction_loss.mean() * self.config.stat_tracking_epsilon
+                              + state.get(self.avg_loss_reconstruction) * (1 - self.config.stat_tracking_epsilon))
             state = state.set(self.avg_loss_sparsity,
-                                sparsity_loss.mean(0) * self.config.loss_tracking_epsilon
-                                + state.get(self.avg_loss_sparsity) * (1 - self.config.loss_tracking_epsilon))
+                                sparsity_loss.mean(0) * self.config.stat_tracking_epsilon
+                                + state.get(self.avg_loss_sparsity) * (1 - self.config.stat_tracking_epsilon))
             state = state.set(self.avg_l0,
-                                active.mean(0) * self.config.loss_tracking_epsilon
-                                + state.get(self.avg_l0) * (1 - self.config.loss_tracking_epsilon))
+                                active.mean(0) * self.config.stat_tracking_epsilon
+                                + state.get(self.avg_l0) * (1 - self.config.stat_tracking_epsilon))
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.mean()
         output = SAEOutput(
             output=out,
@@ -126,7 +134,6 @@ class SAE(eqx.Module):
         elif self.config.reconstruction_loss_type == "l1":
             return jnp.abs(output - target)
 
-    @partial(eqx.filter_jit, donate="first")
     def apply_updates(self, updates: PyTree[Float], state: eqx.nn.State, last_input: Float[Array, "b f"], last_output: SAEOutput, step: int):
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):
@@ -162,7 +169,7 @@ class SAE(eqx.Module):
     def get_stats(self, state):
         num_steps = int(state.get(self.num_steps))
         assert num_steps > 0
-        bias_corr = 1 - (1 - self.config.loss_tracking_epsilon) ** num_steps
+        bias_corr = 1 - (1 - self.config.stat_tracking_epsilon) ** num_steps
         return dict(
             time_since_fired=np.asarray(state.get(self.time_since_fired)),
             num_steps=num_steps,

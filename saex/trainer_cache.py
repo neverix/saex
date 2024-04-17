@@ -20,26 +20,33 @@ class ActivationBuffer(eqx.Module):
     n_dimensions: int
     _cache: eqx.nn.StateIndex
     _n_valid: eqx.nn.StateIndex
+    _index: eqx.nn.StateIndex
 
     def __init__(self, max_samples, n_dimensions, dtype=jnp.float16):
         self.max_samples = max_samples
         self.n_dimensions = n_dimensions
         self._cache = eqx.nn.StateIndex(jnp.empty((max_samples, n_dimensions), dtype=dtype))
         self._n_valid = eqx.nn.StateIndex(0)
+        self._index = eqx.nn.StateIndex(0)
 
     @partial(eqx.filter_jit, donate="all-except-first")
     def __call__(self, activations, state, mask=None):
-        cache, n_valid = state.get(self._cache), state.get(self._n_valid)
+        cache, n_valid, index = state.get(self._cache), state.get(self._n_valid), state.get(self._index)
         if mask is None:
             mask = jnp.ones(len(activations), dtype=jnp.bool)
         offsets = jnp.cumsum(mask.astype(jnp.int32)) - 1
         new_n_valid = jnp.minimum(n_valid + offsets[-1], self.max_samples)
         # if n_valid == max_samples, we want to overwrite the oldest samples
-        indices = (n_valid + offsets) % self.max_samples
+        indices = (index + offsets) % self.max_samples
+        new_index = (index + offsets[-1]) % self.max_samples
         return (state
                 .set(self._cache,
-                     cache.at[indices].set(activations))
-                .set(self._n_valid, new_n_valid))
+                     cache
+                     # TODO properly order indices so one .set() does the job
+                     .at[indices].set(0)
+                     .at[indices].add(activations.astype(cache.dtype) * mask[:, None]))
+                .set(self._n_valid, new_n_valid)
+                .set(self._index, new_index))
 
     def sample_batch(self, state, key=None):
         if key is None:
@@ -55,13 +62,13 @@ class BufferTrainerConfig:
 
     lr: float
     scheduler_warmup: int
-    scheduler_end_value: float
     
     train_iterations: int
     dry_run_steps: int
     sae_config: SAEConfig
     
     cache_batch_size: int
+    cache_every_steps: int
     model_config: TransformersModelConfig
     dataset_config: IterableDatasetConfig
     
@@ -94,11 +101,13 @@ class BufferTrainer(object):
         key = utils.get_key()
         
         optimizer = optax.chain(
-            optax.scale_by_adam(),
+            optax.adam(self.config.lr),
             optax.scale_by_schedule(
-                optax.warmup_cosine_decay_schedule(0.0, self.config.scheduler_warmup,
-                                                   self.config.lr, self.config.train_iterations,
-                                                   self.config.scheduler_end_value)
+                optax.warmup_cosine_decay_schedule(0,
+                                                   self.config.scheduler_warmup,
+                                                   1,
+                                                   self.config.train_iterations,
+                                                   0)
             ),
         )
         opt_state = optimizer.init(sae_params)
@@ -111,12 +120,13 @@ class BufferTrainer(object):
             return sae_output.loss, (sae_output, sae_state)
 
         for iteration in bar:
-            # cache more activations
-            texts = []
-            for _ in range(self.config.cache_batch_size):
-                texts.append(next(dataset_iterator))
-            activations, model_misc = self.model(texts)
-            self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
+            if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps:
+                # cache more activations
+                texts = []
+                for _ in range(self.config.cache_batch_size):
+                    texts.append(next(dataset_iterator))
+                activations, model_misc = self.model(texts)
+                self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
             
             if iteration < self.config.dry_run_steps:
                 bar.set_description("Caching activations")
@@ -127,13 +137,18 @@ class BufferTrainer(object):
             key, subkeys = jax.random.split(key, 2)
             subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
-                self.buffer_state, subkeys)
+                self.buffer_state, subkeys).astype(jnp.float32)
+            print("ds norm", jnp.linalg.norm(batch, axis=-1).mean())
+            print("pre params", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(sae_params)[0]])
             (loss, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, batch)
+            print("pre grads", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(grad)[0]])
             updates, opt_state = optimizer.update(grad, opt_state, sae_params)
+            print("pre upddates", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(updates)[0]])
             self.sae = self.sae.apply_updates(updates, self.sae_state,
                                               batch, sae_output,
                                               int(self.sae_state.get(self.sae.num_steps)))
             sae_params, sae_static = eqx.partition(self.sae, is_trainable)
+            print("post params", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(sae_params)[0]])
             
             stats = self.sae.get_stats(self.sae_state)
             bar.set_postfix({"reconstruction loss": float(stats["loss_reconstruction"]),
@@ -151,29 +166,10 @@ class BufferTrainer(object):
 
 
 if __name__ == "__main__":
-    # config = BufferTrainerConfig(
-    #     n_dimensions=768,
-    #     train_iterations=1000,
-    #     train_batch_size=32,
-    #     cache_batch_size=32,
-    #     model_config=TransformersModelConfig(
-    #         model_name_or_path="gpt2",
-    #         layer=11,
-    #         cache_n=1,
-    #         cache_hidden_states=True,
-    #     ),
-    #     dataset_config=IterableDatasetConfig(
-    #         dataset_name="Skylion007/openwebtext"
-    #     ),
-    #     buffer_max_samples=256,
-    #     buffer_dtype=jnp.float16,
-    # )
     config = BufferTrainerConfig(
         n_dimensions=768,
-        # lr=1e-3,
-        lr=0,
-        scheduler_warmup=1000,
-        scheduler_end_value=1e-5,
+        lr=1e-3,
+        scheduler_warmup=20,
         train_iterations=1000,
         dry_run_steps=0,
         sae_config=SAEConfig(
@@ -181,22 +177,17 @@ if __name__ == "__main__":
             sparsity_coefficient=1.6e-4,
             batch_size=32,
             expansion_factor=32,
-            # decoder_init_method="random",
-            # decoder_bias_init_method="geom_median",
-            # sparsity_loss_type="l1",
-            # reconstruction_loss_type="mse",
-            # project_updates_from_dec=True,
-            # restrict_dec_norm="exact",
-            # loss_tracking_epsilon=0.05,
-            decoder_init_method="random",
-            decoder_bias_init_method="mean",
+            decoder_init_method="pseudoinverse",
+            decoder_bias_init_method="geom_median",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
-            project_updates_from_dec=False,
-            restrict_dec_norm="none",
-            loss_tracking_epsilon=0.05,
+            project_updates_from_dec=True,
+            restrict_dec_norm="exact",
+            stat_tracking_epsilon=0.05,
         ),
-        cache_batch_size=32,
+        cache_batch_size=64,
+        # cache_every_steps=8,
+        cache_every_steps=1_000,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             layer=9,
@@ -206,7 +197,7 @@ if __name__ == "__main__":
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext"
         ),
-        buffer_max_samples=2 ** 13,
+        buffer_max_samples=2 ** 17,
         buffer_dtype=jnp.float16,
     )
     trainer = BufferTrainer(config)

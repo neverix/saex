@@ -11,7 +11,6 @@ class TransformersModel(object):
         self.config = config
         self._model = transformers.FlaxAutoModel.from_pretrained(config.model_name_or_path)
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path)
-        print(self._tokenizer.pad_token)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
         self._cache = (None, None)
