@@ -26,8 +26,8 @@ class ActivationBuffer(eqx.Module):
         self.max_samples = max_samples
         self.n_dimensions = n_dimensions
         self._cache = eqx.nn.StateIndex(jnp.empty((max_samples, n_dimensions), dtype=dtype))
-        self._n_valid = eqx.nn.StateIndex(0)
-        self._index = eqx.nn.StateIndex(0)
+        self._n_valid = eqx.nn.StateIndex(jnp.array(0))
+        self._index = eqx.nn.StateIndex(jnp.array(0))
 
     @partial(eqx.filter_jit, donate="all-except-first")
     def __call__(self, activations, state, mask=None):
@@ -172,14 +172,17 @@ if __name__ == "__main__":
         dry_run_steps=0,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=1e-4,
+            # sparsity_coefficient=1e-3,
+            sparsity_coefficient=0,
             batch_size=2**14,
             expansion_factor=32,
+            use_encoder_bias=False,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="mean",
+            decoder_bias_init_method="geom_median",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
+            use_ghost_grads=False,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
@@ -192,7 +195,7 @@ if __name__ == "__main__":
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext"
         ),
-        buffer_max_samples=2 ** 17,
+        buffer_max_samples=2 ** 19,
         buffer_dtype=jnp.float16,
     )
     trainer = BufferTrainer(config)

@@ -20,14 +20,21 @@ class SAEConfig:
     batch_size: int    
 
     expansion_factor: int = 32
+    
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
-    sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
-    reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
+    
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
+    
+    sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
+    reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
+    
+    use_ghost_grads: bool = False
+    dead_after: int = 50
+    
     stat_tracking_epsilon: float = 0.05
 
 class SAEOutput(NamedTuple):
@@ -105,11 +112,15 @@ class SAE(eqx.Module):
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.stat_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.stat_tracking_epsilon))
-        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
+        if state is None or not self.config.use_ghost_grads:
+            ghost_losses = {}
+        else:
+            ghost_losses = self.compute_ghost_losses(state, activations, out, pre_relu)
+        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean() + jnp.mean(sum(ghost_losses.values(), 0.0))
         output = SAEOutput(
             output=out,
             loss=loss,
-            losses={"reconstruction": reconstruction_loss, "sparsity": sparsity_loss},
+            losses={"reconstruction": reconstruction_loss, "sparsity": sparsity_loss, **ghost_losses},
             activations={"pre_relu": pre_relu, "post_relu": post_relu, "hidden": hidden},
         )
         if state is None:
@@ -165,6 +176,21 @@ class SAE(eqx.Module):
         elif self.config.restrict_dec_norm == "lte":
             return w_dec / jnp.maximum(1, jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         return w_dec
+    
+    def compute_ghost_losses(self, state, activations, reconstructions, pre_relu, eps=1e-6):
+        dead = state.get(self.time_since_fired) > self.config.dead_after
+        post_exp = jnp.exp(pre_relu) * dead * self.s
+        ghost_recon = post_exp @ self.W_dec
+        
+        ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
+        diff_norm = jnp.linalg.norm(activations - reconstructions, axis=-1)
+        ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm + eps))[:, None] / 2
+        
+        ghost_loss = self.reconstruction_loss(ghost_recon, activations)
+        recon_loss = self.reconstruction_loss(reconstructions, activations)
+        ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))[:, None]
+        
+        return {"ghost": ghost_loss}
         
     
     def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):
@@ -177,7 +203,7 @@ class SAE(eqx.Module):
             loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
             loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
             l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            dead=float((time_since_fired > self.config.dead_after).mean() * 100),
+            var_explained=float((1 - (last_output.output - last_input).var(0) / last_input.var(0)).mean() * 100),
             max_time_since_fired=int(time_since_fired.max()),
-            pct_dead=float((time_since_fired > 100).mean() * 100),
-            pct_var_explained=float(((last_output.output - last_input).var(0) / last_input.var(0)).mean() * 100)
         )
