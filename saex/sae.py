@@ -69,10 +69,13 @@ class SAE(eqx.Module):
             self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "pseudoinverse":
-            for _ in range(100):
+            if config.restrict_dec_norm == "none":
                 self.W_dec = jnp.linalg.pinv(self.W_enc)
-                self.W_dec = self.normalize_w_dec(self.W_dec)
-                self.W_enc = jnp.linalg.pinv(self.W_dec)
+            else:
+                for _ in range(100):
+                    self.W_dec = jnp.linalg.pinv(self.W_enc)
+                    self.W_dec = self.normalize_w_dec(self.W_dec)
+                    self.W_enc = jnp.linalg.pinv(self.W_dec)
         else:
             raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
         
@@ -104,7 +107,7 @@ class SAE(eqx.Module):
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.stat_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.stat_tracking_epsilon))
-        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.mean()
+        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
         output = SAEOutput(
             output=out,
             loss=loss,
@@ -170,10 +173,13 @@ class SAE(eqx.Module):
         num_steps = int(state.get(self.num_steps))
         assert num_steps > 0
         bias_corr = 1 - (1 - self.config.stat_tracking_epsilon) ** num_steps
+        time_since_fired = np.asarray(state.get(self.time_since_fired))
+        l0 = np.asarray(state.get(self.avg_l0)) / bias_corr
         return dict(
-            time_since_fired=np.asarray(state.get(self.time_since_fired)),
+            time_since_fired=time_since_fired,
             num_steps=num_steps,
             loss_sparsity=np.asarray(state.get(self.avg_loss_sparsity) / bias_corr),
             loss_reconstruction=np.asarray(state.get(self.avg_loss_reconstruction) / bias_corr),
-            l0=np.asarray(state.get(self.avg_l0)),
+            l0=l0,
+            pct_dead=(time_since_fired > 100).mean() * 100
         )

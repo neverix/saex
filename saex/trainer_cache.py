@@ -101,6 +101,7 @@ class BufferTrainer(object):
         key = utils.get_key()
         
         optimizer = optax.chain(
+            optax.clip_by_global_norm(1.0),
             optax.adam(self.config.lr),
             optax.scale_by_schedule(
                 optax.warmup_cosine_decay_schedule(0,
@@ -132,28 +133,23 @@ class BufferTrainer(object):
                 bar.set_description("Caching activations")
                 continue
             bar.set_description("Training SAE")
-            
+
             # train SAE
             key, subkeys = jax.random.split(key, 2)
             subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
                 self.buffer_state, subkeys).astype(jnp.float32)
-            print("ds norm", jnp.linalg.norm(batch, axis=-1).mean())
-            print("pre params", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(sae_params)[0]])
             (loss, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, batch)
-            print("pre grads", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(grad)[0]])
             updates, opt_state = optimizer.update(grad, opt_state, sae_params)
-            print("pre upddates", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(updates)[0]])
             self.sae = self.sae.apply_updates(updates, self.sae_state,
                                               batch, sae_output,
                                               int(self.sae_state.get(self.sae.num_steps)))
             sae_params, sae_static = eqx.partition(self.sae, is_trainable)
-            print("post params", [(k, jnp.linalg.norm(v)) for k, v in jax.tree_util.tree_flatten_with_path(sae_params)[0]])
             
             stats = self.sae.get_stats(self.sae_state)
             bar.set_postfix({"reconstruction loss": float(stats["loss_reconstruction"]),
-                             "sparsity loss": float(stats["loss_sparsity"].mean()),
-                             "l0": float(stats["l0"].sum()),
+                             "sparsity loss": float(stats["loss_sparsity"].sum()),
+                             "l0": float(stats["l0"].sum()), "pct_dead": float(stats["pct_dead"]),
                              "loss": loss})
             # TODO: track in wandb or other logger:
             # - L0
@@ -170,24 +166,24 @@ if __name__ == "__main__":
         n_dimensions=768,
         lr=1e-3,
         scheduler_warmup=20,
-        train_iterations=1000,
+        train_iterations=100_000,
         dry_run_steps=0,
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=1.6e-4,
-            batch_size=32,
+            batch_size=2**14,
             expansion_factor=32,
+            encoder_bias_init_mean=0.,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="mean",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
-        cache_batch_size=64,
-        # cache_every_steps=8,
-        cache_every_steps=1_000,
+        cache_every_steps=8,
+        cache_batch_size=32,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             layer=9,

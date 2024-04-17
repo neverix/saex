@@ -17,8 +17,7 @@ def geometric_median_objective(
 
 def geometric_median(points,
                      eps=1e-6,
-                     maxiter=100,
-                     ftol=1e-20):
+                     maxiter=200):
     weights = jnp.ones(points.shape[0])
     median = weighted_average(points, weights)
     for _ in range(maxiter):

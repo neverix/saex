@@ -2,8 +2,10 @@
 Sparse autoencoders in Jax.
 
 ## Running
-Toy model:
 ```bash
+# Train a small SAE. Requires at least 32GB of RAM.
+poetry run python -m saex.trainer_cache
+# Generate data for a toy model
 JAX_PLATFORMS=cpu python -m saex.toy_models
 ```
 
