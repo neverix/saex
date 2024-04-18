@@ -193,8 +193,9 @@ if __name__ == "__main__":
             batch_size=2**15,
             expansion_factor=32,
             use_encoder_bias=True,
+            remove_decoder_bias=True,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="zeros",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
@@ -208,7 +209,7 @@ if __name__ == "__main__":
         cache_batch_size=32,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=7,
+            layer=1,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext"

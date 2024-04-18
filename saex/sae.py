@@ -25,6 +25,7 @@ class SAEConfig:
     
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
+    remove_decoder_bias: bool = False
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     
@@ -94,7 +95,10 @@ class SAE(eqx.Module):
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
 
     def __call__(self, activations, state=None):
-        pre_relu = activations @ self.W_enc
+        inputs = activations
+        if self.config.remove_decoder_bias:
+            inputs = inputs - self.b_dec
+        pre_relu = inputs @ self.W_enc
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         active = pre_relu > 0
@@ -215,8 +219,8 @@ class SAE(eqx.Module):
 
 def restore_sae(sae: SAE, weights_path: os.PathLike):
     with safetensors.safe_open(weights_path, "flax") as f:
-        sae = eqx.tree_at(lambda s: s.W_dec, sae, f.get_tensor("W_dec"))
-        sae = eqx.tree_at(lambda s: s.b_enc, sae, f.get_tensor("b_enc"))
         sae = eqx.tree_at(lambda s: s.W_enc, sae, f.get_tensor("W_enc"))
+        sae = eqx.tree_at(lambda s: s.b_enc, sae, f.get_tensor("b_enc"))
+        sae = eqx.tree_at(lambda s: s.W_dec, sae, f.get_tensor("W_dec"))
         sae = eqx.tree_at(lambda s: s.b_dec, sae, f.get_tensor("b_dec"))
     return sae
