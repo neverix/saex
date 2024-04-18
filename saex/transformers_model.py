@@ -26,6 +26,11 @@ class TransformersModel(object):
 
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": tokens["attention_mask"].reshape(-1)}
 
+    # def eval_loss(self, texts, autoencoder):
+    #     tokens = self._tokenizer(texts, return_tensors="jax", padding="max_length", truncation=True,
+    #                              max_length=self._model.config.n_positions)
+    #     outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
+
 
 @dataclass
 class TransformersModelConfig:

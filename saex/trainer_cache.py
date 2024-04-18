@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -9,7 +10,7 @@ from tqdm.auto import trange
 
 from . import utils
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
-from .sae import SAE, SAEConfig
+from .sae import SAE, SAEConfig, restore_sae
 from .transformers_model import TransformersModelConfig
 
 
@@ -66,7 +67,10 @@ class BufferTrainerConfig:
 
     train_iterations: int
     dry_run_steps: int
+    no_update: bool
+    
     sae_config: SAEConfig
+    sae_restore: Optional[str]
     
     cache_batch_size: int
     cache_every_steps: int
@@ -82,18 +86,26 @@ class BufferTrainer(object):
         self.config = config
         self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
             config.buffer_max_samples, config.n_dimensions, dtype=config.buffer_dtype)
-        if model is None:
-            model = config.model_config.model_class(config.model_config)
-        self.model = model
-        if create_dataset is None:
-            create_dataset = create_iterable_dataset(config.dataset_config)
-        self.create_dataset = create_dataset
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
+            print("Creating SAE...")
             self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config)
+            if config.sae_restore:
+                print(f"Loading checkpoint ({config.sae_restore})...")
+                self.sae = restore_sae(self.sae, config.sae_restore)
+        if model is None:
+            print("Loading model...")
+            model = config.model_config.model_class(config.model_config)
+        self.model = model
+        if create_dataset is None:
+            print("Loading dataset...")
+            create_dataset = create_iterable_dataset(config.dataset_config)
+        self.create_dataset = create_dataset
 
     def train(self):
+        print("Training for", self.config.train_iterations, "iterations")
+        
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
         dataset_iterator = iter(self.create_dataset())
         
@@ -145,12 +157,14 @@ class BufferTrainer(object):
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
                 self.buffer_state, subkeys).astype(jnp.float32)
             batch = jnp.nan_to_num(batch)
+            # TODO put update into 1 step
             (_, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
-            updates, opt_state = optimizer.update(grad, opt_state, sae_params)
-            self.sae = self.sae.apply_updates(updates, self.sae_state,
-                                              batch, sae_output,
-                                              int(self.sae_state.get(self.sae.num_steps)))
-            sae_params, sae_static = eqx.partition(self.sae, is_trainable)
+            if not self.config.no_update:
+                updates, opt_state = optimizer.update(grad, opt_state, sae_params)
+                self.sae = self.sae.apply_updates(updates, self.sae_state,
+                                                batch, sae_output,
+                                                int(self.sae_state.get(self.sae.num_steps)))
+                sae_params, sae_static = eqx.partition(self.sae, is_trainable)
             
             stats = self.sae.get_stats(self.sae_state, batch, sae_output)
             bar.set_postfix(stats)
@@ -172,12 +186,13 @@ if __name__ == "__main__":
         scheduler_cycle=10_000,
         train_iterations=100_000,
         dry_run_steps=0,
+        no_update=True,
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=1e-3,
             batch_size=2**15,
             expansion_factor=32,
-            use_encoder_bias=False,
+            use_encoder_bias=True,
             decoder_init_method="pseudoinverse",
             decoder_bias_init_method="geom_median",
             sparsity_loss_type="l1",
@@ -188,6 +203,7 @@ if __name__ == "__main__":
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
+        sae_restore="weights/bloom-gpt2s-1.safetensors",
         cache_every_steps=8,
         cache_batch_size=32,
         model_config=TransformersModelConfig(

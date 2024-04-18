@@ -1,13 +1,15 @@
 from collections import namedtuple
 from dataclasses import dataclass
+from functools import partial
 from typing import Dict, Literal, NamedTuple
 
-from functools import partial
+import safetensors
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, PyTree
+import os
 
 from . import utils
 from .geometric_median import geometric_median
@@ -180,7 +182,7 @@ class SAE(eqx.Module):
     
     def compute_ghost_losses(self, state, activations, reconstructions, pre_relu, eps=1e-3):
         dead = state.get(self.time_since_fired) > self.config.dead_after
-        post_exp = jnp.exp(pre_relu) * dead * self.s
+        post_exp = jnp.where(dead, 0, jnp.exp(pre_relu) * self.s)
         ghost_recon = post_exp @ self.W_dec
         
         ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
@@ -191,7 +193,7 @@ class SAE(eqx.Module):
         recon_loss = self.reconstruction_loss(reconstructions, activations)
         ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
         
-        return ghost_loss
+        return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss))
         
     
     def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):
@@ -210,3 +212,11 @@ class SAE(eqx.Module):
                                  ).mean(0)).mean()),
             max_time_since_fired=int(time_since_fired.max()),
         )
+
+def restore_sae(sae: SAE, weights_path: os.PathLike):
+    with safetensors.safe_open(weights_path, "flax") as f:
+        sae = eqx.tree_at(lambda s: s.W_dec, sae, f.get_tensor("W_dec"))
+        sae = eqx.tree_at(lambda s: s.b_enc, sae, f.get_tensor("b_enc"))
+        sae = eqx.tree_at(lambda s: s.W_enc, sae, f.get_tensor("W_enc"))
+        sae = eqx.tree_at(lambda s: s.b_dec, sae, f.get_tensor("b_dec"))
+    return sae
