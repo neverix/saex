@@ -90,17 +90,19 @@ class SAE(eqx.Module):
                 self.W_enc, self.W_dec = W_enc, W_dec
         else:
             raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
-    
+
         self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.num_steps = eqx.nn.StateIndex(jnp.array(0))
         self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
 
-    def __call__(self, activations, state=None):
+    def __call__(self, activations: jax.Array, state=None):
+        activations = activations.astype(jnp.float32)
         inputs = activations
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
-        pre_relu = inputs @ self.W_enc
+        # pre_relu = inputs @ self.W_enc
+        pre_relu = jnp.einsum("... i, i h -> ... h", inputs, self.W_enc)
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         active = pre_relu > 0
@@ -211,8 +213,8 @@ class SAE(eqx.Module):
             loss=last_output.loss,
             loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
             loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
-            l0=(last_output.activations["pre_relu"] > 0).mean(-1).sum(),
-            # l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            # l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
+            l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=float((time_since_fired > self.config.dead_after).mean()),
             var_explained=float(jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
                                  * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)

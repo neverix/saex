@@ -204,12 +204,12 @@ if __name__ == "__main__":
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
-        sae_restore="weights/bloom-gpt2s-1.safetensors",
-        cache_every_steps=8,
-        cache_batch_size=128,
+        sae_restore="weights/bloom-gpt2s-0.safetensors",
+        cache_every_steps=1,
+        cache_batch_size=16,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=2,
+            layer=0,
             max_seq_len=128,
         ),
         dataset_config=IterableDatasetConfig(
