@@ -137,6 +137,11 @@ class BufferTrainer(object):
             sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
+        import safetensors as st
+        # with st.safe_open("weights/gpt2-l1.safetensors", framework="flax") as f:
+        #     cache = f.get_tensor("cache")
+        #     batch = cache.reshape(-1, cache.shape[-1])
+
         for iteration in bar:
             if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps:
                 # cache more activations
@@ -157,6 +162,7 @@ class BufferTrainer(object):
             batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
                 self.buffer_state, subkeys).astype(jnp.float32)
             batch = jnp.nan_to_num(batch)
+            
             # TODO put update into 1 step
             (_, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
             if not self.config.no_update:
@@ -178,7 +184,7 @@ class BufferTrainer(object):
             # - norm ratio
 
 
-if __name__ == "__main__":
+def main():
     config = BufferTrainerConfig(
         n_dimensions=768,
         lr=1e-2,
@@ -186,8 +192,8 @@ if __name__ == "__main__":
         scheduler_cycle=10_000,
         train_iterations=100_000,
         dry_run_steps=0,
-        no_update=False,
-        # no_update=True,
+        # no_update=False,
+        no_update=True,
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=2e-4,
@@ -205,14 +211,16 @@ if __name__ == "__main__":
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
-        sae_restore=None,
-        # sae_restore="weights/bloom-gpt2s-0.safetensors",
+        # sae_restore=None,
+        sae_restore="weights/bloom-gpt2s-1.safetensors",
         cache_every_steps=8,
         cache_batch_size=128,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=0,
+            layer=1,
             max_seq_len=128,
+            add_prefix="<|endoftext|>",
+            concat_all=True,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext",
@@ -222,3 +230,7 @@ if __name__ == "__main__":
     )
     trainer = BufferTrainer(config)
     trainer.train()
+
+
+if __name__ == "__main__":
+    main()

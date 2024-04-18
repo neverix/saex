@@ -101,8 +101,7 @@ class SAE(eqx.Module):
         inputs = activations
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
-        # pre_relu = inputs @ self.W_enc
-        pre_relu = jnp.einsum("... i, i h -> ... h", inputs, self.W_enc)
+        pre_relu = inputs @ self.W_enc
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         active = pre_relu > 0
