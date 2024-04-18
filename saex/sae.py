@@ -185,7 +185,7 @@ class SAE(eqx.Module):
         
         ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
         diff_norm = jnp.linalg.norm(activations - reconstructions, axis=-1)
-        ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm + eps))[:, None] / 2
+        ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
         
         ghost_loss = self.reconstruction_loss(ghost_recon, activations)
         recon_loss = self.reconstruction_loss(reconstructions, activations)
@@ -204,7 +204,9 @@ class SAE(eqx.Module):
             loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
             loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
             l0=(state.get(self.avg_l0) / bias_corr).sum(),
-            dead=float((time_since_fired > self.config.dead_after).mean() * 100),
-            var_explained=float((1 - (last_output.output - last_input).var(0) / last_input.var(0)).mean() * 100),
+            dead=float((time_since_fired > self.config.dead_after).mean()),
+            var_explained=float(jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
+                                 * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)
+                                 ).mean(0)).mean()),
             max_time_since_fired=int(time_since_fired.max()),
         )

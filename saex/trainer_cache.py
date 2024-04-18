@@ -175,16 +175,16 @@ if __name__ == "__main__":
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=1e-3,
-            batch_size=2**14,
+            batch_size=2**15,
             expansion_factor=32,
             use_encoder_bias=False,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="zeros",
+            decoder_bias_init_method="geom_median",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
             use_ghost_grads=True,
-            dead_after=50,
+            dead_after=200,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
@@ -192,7 +192,7 @@ if __name__ == "__main__":
         cache_batch_size=32,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=1,
+            layer=7,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext"
