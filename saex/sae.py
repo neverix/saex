@@ -82,10 +82,12 @@ class SAE(eqx.Module):
             if config.restrict_dec_norm == "none":
                 self.W_dec = jnp.linalg.pinv(self.W_enc)
             else:
-                for _ in range(100):
-                    self.W_dec = jnp.linalg.pinv(self.W_enc)
-                    self.W_dec = self.normalize_w_dec(self.W_dec)
-                    self.W_enc = jnp.linalg.pinv(self.W_dec)
+                W_enc = self.W_enc
+                for _ in range(5):
+                    W_dec = jnp.linalg.pinv(W_enc)
+                    W_dec = self.normalize_w_dec(W_dec)
+                    W_enc = jnp.linalg.pinv(W_dec)
+                self.W_enc, self.W_dec = W_enc, W_dec
         else:
             raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
     
@@ -145,11 +147,11 @@ class SAE(eqx.Module):
         else:
             raise ValueError(f"Unknown sparsity_loss_type {self.config.sparsity_loss_type}")
     
-    def reconstruction_loss(self, output, target):
+    def reconstruction_loss(self, output, target, eps=1e-6):
         if self.config.reconstruction_loss_type == "mse":
             return (output - target) ** 2
         elif self.config.reconstruction_loss_type == "mse_batchnorm":
-            return ((output - target) ** 2) / (target - target.mean(0, keepdims=True)).norm(axis=-1).mean()
+            return ((output - target) ** 2) / ((target - target.mean(0, keepdims=True)).norm(axis=-1, keepdims=True) + eps)
         elif self.config.reconstruction_loss_type == "l1":
             return jnp.abs(output - target)
 
@@ -209,7 +211,8 @@ class SAE(eqx.Module):
             loss=last_output.loss,
             loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
             loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
-            l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            l0=(last_output.activations["pre_relu"] > 0).mean(-1).sum(),
+            # l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=float((time_since_fired > self.config.dead_after).mean()),
             var_explained=float(jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
                                  * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)

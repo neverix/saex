@@ -37,7 +37,7 @@ class TransformersModelConfig:
     model_name_or_path: os.PathLike
     layer: int
     cache_n: int = 0
-    cache_hidden_states: bool = False
+    # cache_hidden_states: bool = False
     max_seq_len: int = 512
     @property
     def model_class(self) -> type:

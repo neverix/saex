@@ -209,7 +209,7 @@ if __name__ == "__main__":
         cache_batch_size=128,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
-            layer=1,
+            layer=2,
             max_seq_len=128,
         ),
         dataset_config=IterableDatasetConfig(
