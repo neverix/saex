@@ -17,7 +17,7 @@ class TransformersModel(object):
 
     def __call__(self, texts):
         tokens = self._tokenizer(texts, return_tensors="jax", padding="max_length", truncation=True,
-                                 max_length=self._model.config.n_positions)
+                                 max_length=self.config.max_seq_len)
         outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
         hidden_states = outputs.hidden_states[self.config.layer]
         if self.config.cache_n > 0 and self._cache[0] is None:
@@ -38,6 +38,7 @@ class TransformersModelConfig:
     layer: int
     cache_n: int = 0
     cache_hidden_states: bool = False
+    max_seq_len: int = 512
     @property
     def model_class(self) -> type:
         return TransformersModel

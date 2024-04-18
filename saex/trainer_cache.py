@@ -206,13 +206,14 @@ if __name__ == "__main__":
         ),
         sae_restore="weights/bloom-gpt2s-1.safetensors",
         cache_every_steps=8,
-        cache_batch_size=32,
+        cache_batch_size=128,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             layer=1,
+            max_seq_len=128,
         ),
         dataset_config=IterableDatasetConfig(
-            dataset_name="Skylion007/openwebtext"
+            dataset_name="Skylion007/openwebtext",
         ),
         buffer_max_samples=2 ** 19,
         buffer_dtype=jnp.float16,
