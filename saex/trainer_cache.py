@@ -101,7 +101,7 @@ class BufferTrainer(object):
             sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
-        @partial(jax.jit, static_argnums=(2,), donate_argnums=(0, 1, 3, 4))
+        @partial(jax.jit, static_argnums=(2,), donate_argnums=(1, 3, 4))
         def train_step(
             batch, sae_params, sae_static, sae_state, opt_state, step
         ):
@@ -167,14 +167,15 @@ def main():
         n_dimensions=768,
         lr=1e-3,
         scheduler_warmup=100,
-        scheduler_cycle=10_000,
+        scheduler_cycle=None,
         train_iterations=10_000,
-        save_steps=100,
+        # save_steps=1_000,
+        save_steps=None,
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=1.6e-3,
+            sparsity_coefficient=8e-5,
             batch_size=2**10,
             expansion_factor=32,
             use_encoder_bias=True,
@@ -182,7 +183,7 @@ def main():
             decoder_init_method="pseudoinverse",
             decoder_bias_init_method="zeros",
             sparsity_loss_type="l1",
-            reconstruction_loss_type="mse",
+            reconstruction_loss_type="mse_batchnorm",
             project_updates_from_dec=True,
             use_ghost_grads=False,
             dead_after=200,

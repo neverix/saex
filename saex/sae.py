@@ -123,9 +123,9 @@ class SAE(eqx.Module):
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if state is not None and self.config.use_ghost_grads:
-            ghost_losses = self.compute_ghost_losses(state, activations, out, pre_relu)
-            losses = {**losses, "ghost": ghost_losses}
-            loss = loss + ghost_losses.mean()
+            ghost_loss = self.compute_ghost_loss(state, activations, out, pre_relu)
+            losses = {**losses, "ghost": ghost_loss}
+            loss = loss + ghost_loss.mean()
         output = SAEOutput(
             output=out,
             loss=loss,
@@ -151,9 +151,12 @@ class SAE(eqx.Module):
         if self.config.reconstruction_loss_type == "mse":
             return (output - target) ** 2
         elif self.config.reconstruction_loss_type == "mse_batchnorm":
-            return ((output - target) ** 2) / ((target - target.mean(0, keepdims=True)).norm(axis=-1, keepdims=True) + eps)
+            return ((output - target) ** 2) / (
+                jnp.linalg.norm((target - target.mean(0, keepdims=True)), axis=-1, keepdims=True) + eps)
         elif self.config.reconstruction_loss_type == "l1":
             return jnp.abs(output - target)
+        else:
+            raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
 
     def apply_updates(self, updates: PyTree[Float],
                       state: eqx.nn.State,
@@ -193,7 +196,7 @@ class SAE(eqx.Module):
             return w_dec / jnp.maximum(1, eps + jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         return w_dec
     
-    def compute_ghost_losses(self, state, activations, reconstructions, pre_relu, eps=1e-3):
+    def compute_ghost_loss(self, state, activations, reconstructions, pre_relu, eps=1e-3):
         dead = state.get(self.time_since_fired) > self.config.dead_after
         post_exp = jnp.where(dead, 0, jnp.exp(pre_relu) * self.s)
         ghost_recon = post_exp @ self.W_dec
@@ -239,6 +242,7 @@ class SAE(eqx.Module):
         save_file({
             "W_enc": self.W_enc,
             "b_enc": self.b_enc,
-            "W_dec": self.W_dec * self.s[:, None],
+            "scaling_factor": self.s,
+            "W_dec": self.W_dec,
             "b_dec": self.b_dec,
         }, weights_path)
