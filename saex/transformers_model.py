@@ -12,8 +12,10 @@ class TransformersModel(object):
 
     def __init__(self, config: "TransformersModelConfig"):
         self.config = config
-        self._model = jax.jit(transformers.FlaxAutoModel.from_pretrained(config.model_name_or_path, dtype=jnp.float16),
-                              static_argnames=("output_hidden_states",))
+        self._model = jax.jit(
+            transformers.FlaxAutoModel.from_pretrained(
+                config.model_name_or_path, dtype=jnp.float32, from_pt=config.from_pt),
+            static_argnames=("output_hidden_states",))
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -58,6 +60,7 @@ class TransformersModelConfig:
     max_seq_len: int = 512
     add_prefix: str = ""
     concat_all: bool = False
+    from_pt: bool = False
     @property
     def model_class(self) -> type:
         return TransformersModel

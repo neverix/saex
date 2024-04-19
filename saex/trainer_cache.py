@@ -74,6 +74,7 @@ class BufferTrainerConfig:
     
     cache_batch_size: int
     cache_every_steps: int
+    cache_acc: int
     model_config: TransformersModelConfig
     dataset_config: IterableDatasetConfig
     
@@ -159,13 +160,14 @@ class BufferTrainer(object):
 
         for iteration in bar:
             if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps or self.buffer is None:
-                # cache more activations
-                texts = []
-                for _ in range(self.config.cache_batch_size):
-                    texts.append(next(dataset_iterator))
-                activations, model_misc = self.model(texts)
-                if self.buffer is not None:
-                    self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
+                for _ in range(self.config.cache_acc):
+                    # cache more activations
+                    texts = []
+                    for _ in range(self.config.cache_batch_size):
+                        texts.append(next(dataset_iterator))
+                    activations, model_misc = self.model(texts)
+                    if self.buffer is not None:
+                        self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
             
             if iteration < self.config.dry_run_steps:
                 bar.set_description("Caching activations")
@@ -226,8 +228,12 @@ def main():
         sae_restore="weights/bloom-gpt2s-1.safetensors",
         cache_every_steps=1,
         cache_batch_size=256,
+        cache_acc=1,
+        buffer_max_samples=2**18,
         model_config=TransformersModelConfig(
-            model_name_or_path="gpt2",
+            # model_name_or_path="gpt2",
+            model_name_or_path="MBZUAI/LaMini-GPT-124M",
+            from_pt=True,
             layer=1,
             max_seq_len=128,
             add_prefix="<|endoftext|>",
@@ -236,7 +242,6 @@ def main():
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext",
         ),
-        buffer_max_samples=0,
         buffer_dtype=jnp.float16,
     )
     trainer = BufferTrainer(config)
