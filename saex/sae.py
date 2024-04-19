@@ -25,6 +25,7 @@ class SAEConfig:
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
     remove_decoder_bias: bool = False
+    encoder_init_method: Literal["kaiming", "orthogonal"] = "kaiming"
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     
@@ -68,7 +69,12 @@ class SAE(eqx.Module):
         key, w_enc_subkey, w_dec_subkey = jax.random.split(key, 3)
         self.config = config
         self.d_hidden = config.n_dimensions * config.expansion_factor
-        self.W_enc = jax.random.normal(w_enc_subkey, (config.n_dimensions, self.d_hidden))
+        if config.encoder_init_method == "kaiming":
+            self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
+        elif config.encoder_init_method == "orthogonal":
+            self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
+        else:
+            raise ValueError(f"Unknown encoder init method: \"{config.encoder_init_method}\"")
         self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean)
         self.s = jnp.ones((self.d_hidden,))
         self.b_dec = jnp.zeros((config.n_dimensions,))
@@ -90,7 +96,7 @@ class SAE(eqx.Module):
                     W_enc = jnp.linalg.pinv(W_dec)
                 self.W_enc, self.W_dec = W_enc, W_dec
         else:
-            raise ValueError(f"Unknown decoder init method: {config.decoder_init_method}")
+            raise ValueError(f"Unknown decoder init method: \"{config.decoder_init_method}\"")
 
         self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.num_steps = eqx.nn.StateIndex(jnp.array(0))
@@ -252,11 +258,13 @@ class SAE(eqx.Module):
             self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec"))
         return self
 
-    def save(self, weights_path: os.PathLike):
-        save_file({
+    def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float16):
+        state_dict = {
             "W_enc": self.W_enc,
             "b_enc": self.b_enc,
             "scaling_factor": self.s,
             "W_dec": self.W_dec,
             "b_dec": self.b_dec,
-        }, weights_path)
+        }
+        state_dict = {k: v.astype(save_dtype) for k, v in state_dict.items()}
+        save_file(state_dict, weights_path)

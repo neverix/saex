@@ -25,6 +25,7 @@ class BufferTrainerConfig:
 
     train_iterations: int
     save_steps: Optional[int]
+    save_path: Optional[str]
     dry_run_steps: int
     no_update: bool
     
@@ -70,7 +71,6 @@ class BufferTrainer(object):
     def train(self):
         print("Training for", self.config.train_iterations, "iterations")
         
-        bar = trange(self.config.train_iterations + self.config.dry_run_steps)
         dataset_iterator = iter(self.create_dataset())
         
         is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in "f"
@@ -79,10 +79,12 @@ class BufferTrainer(object):
         
         scheduler_cycle = self.config.scheduler_cycle
         if not scheduler_cycle:
-            scheduler_cycle = self.config.train_iterations - self.config.scheduler_warmup
+            scheduler_cycle = self.config.train_iterations
+        print("Learning rate:", self.config.lr, "warmed up for", self.config.scheduler_warmup, "iterations",
+              "and cycled every", scheduler_cycle, "iterations")
         n_cycles = int(self.config.train_iterations / scheduler_cycle)
         optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
+            # optax.clip_by_global_norm(1.0),
             optax.adam(self.config.lr),
             optax.scale_by_schedule(
                 optax.join_schedules(
@@ -117,6 +119,7 @@ class BufferTrainer(object):
             stats = sae.get_stats(sae_state, batch, sae_output)
             return sae_params, sae_state, opt_state, stats
 
+        bar = trange(self.config.train_iterations + self.config.dry_run_steps)
         for iteration in bar:
             if (iteration % self.config.cache_every_steps == 0
                 or iteration < self.config.dry_run_steps
@@ -159,52 +162,62 @@ class BufferTrainer(object):
             
             if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
                 self.sae = eqx.combine(sae_params, sae_static)
-                self.sae.save(f"weights/gpt2s-{self.config.model_config.layer}-tuned.safetensors")
+                self.sae.save(self.config.save_path)
 
 
 def main():
+    layer = 1
+    cache_size = 524288  # 2**19
+    cache_batch_size = 256
+    batch_size = 1024
+    max_seq_len = 128
     config = BufferTrainerConfig(
         n_dimensions=768,
         lr=1e-3,
-        scheduler_warmup=100,
+        scheduler_warmup=128,
         scheduler_cycle=None,
         train_iterations=10_000,
-        # save_steps=1_000,
-        save_steps=None,
+        save_steps=1_000,
+        # save_steps=None,
+        save_path=f"weights/gpt2-{layer}.safetensors",
+        # save_path=f"weights/gpt2s-{layer}-tuned.safetensors",
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=8e-5,
-            batch_size=2**10,
+            sparsity_coefficient=2e-4,
+            batch_size=batch_size,
             expansion_factor=32,
             use_encoder_bias=True,
             remove_decoder_bias=True,
+            encoder_init_method="orthogonal",
+            # https://tenor.com/view/gun-tears-cat-point-gun-crying-cat-gif-17741904
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="zeros",
-            # decoder_bias_init_method="geom_median",
+            # decoder_bias_init_method="zeros",
+            decoder_bias_init_method="geom_median",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse_batchnorm",
             project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             death_loss_type="ghost_grads",
+            # death_loss_type="none",
             death_penalty_threshold=1e-5,
-            dead_after=200,
+            dead_after=8_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),
-        # sae_restore=None,
-        sae_restore="weights/bloom-gpt2s-1.safetensors",
-        cache_every_steps=2**8,
-        cache_batch_size=256,
-        cache_acc=16,
-        buffer_max_samples=2**19,
+        sae_restore=None,
+        # sae_restore=f"weights/jb-gpt2s-{layer}.safetensors",
+        cache_every_steps=int(cache_size / batch_size / 2),
+        cache_batch_size=cache_batch_size,
+        cache_acc=int(cache_size / cache_batch_size / max_seq_len),
+        buffer_max_samples=cache_size,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
-            layer=1,
-            max_seq_len=128,
+            layer=layer,
+            max_seq_len=max_seq_len,
             add_prefix="<|endoftext|>",
             concat_all=False,
             
