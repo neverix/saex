@@ -4,11 +4,12 @@ from typing import Optional
 
 import equinox as eqx
 import jax
+import jax.experimental.mesh_utils as mesh_utils
 import jax.numpy as jnp
+import jax.sharding as jshard
+import jax_smi
 import numpy as np
 import optax
-import jax.sharding as jshard
-import jax.experimental.mesh_utils as mesh_utils
 from tqdm.auto import trange
 
 from . import utils
@@ -43,16 +44,22 @@ class BufferTrainerConfig:
     
     buffer_max_samples: int
     buffer_dtype: jnp.dtype
+    
+    use_devices: int
 
 
 class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
 
-        # TODO
-        self.mesh = mesh_utils.create_device_mesh((len(jax.devices()), 1))
-        self.sharding = jshard.PositionalSharding(self.mesh)
-        self.sharding_dp = self.sharding.replicate(0)
+        try:
+            self.mesh = mesh_utils.create_device_mesh((self.config.use_devices, 1))
+            self.sharding = jshard.PositionalSharding(self.mesh)
+            self.sharding_dp = self.sharding.replicate(0)
+        except ValueError:
+            device = jax.devices()[0]
+            self.sharding = device
+            self.sharding_dp = device
         
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
@@ -164,8 +171,13 @@ class BufferTrainer(object):
                 batch = activations
             else:
                 key, subkey = jax.random.split(key, 2)
-                self.buffer_state, batch = self.buffer.sample_batch(
-                    self.buffer_state, self.config.sae_config.batch_size, subkey)
+                # self.buffer_state, batch = self.buffer.sample_batch(
+                #     self.buffer_state, self.config.sae_config.batch_size, subkey)
+                subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
+                self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
+                                                    in_axes=(None, 0), out_axes=(None, 0))(
+                    self.buffer_state,
+                    eqx.filter_shard(subkeys, self.sharding))
             
             batch = eqx.filter_shard(batch, self.sharding)
             # TODO put update into 1 step
@@ -188,10 +200,14 @@ class BufferTrainer(object):
 
 
 def main():
+    # jax_smi.initialise_tracking()
+ 
+    n_devices = len(jax.devices())
+    # n_devices = 1
     layer = 1
-    cache_size = 524288 // 8  # 2**19
-    cache_batch_size = 1024 // 8
-    batch_size = 1024 // 8
+    cache_size = 2**19
+    cache_batch_size = 1024
+    batch_size = 1024
     max_seq_len = 128
     config = BufferTrainerConfig(
         n_dimensions=768,
@@ -238,7 +254,8 @@ def main():
         cache_every_steps=int(cache_size / batch_size / 2),
         cache_batch_size=cache_batch_size,
         cache_acc=int(cache_size / cache_batch_size / max_seq_len),
-        buffer_max_samples=cache_size,
+        # buffer_max_samples=cache_size,
+        buffer_max_samples=0,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
@@ -255,7 +272,8 @@ def main():
             dataset_name="Skylion007/openwebtext",
             # dataset_name="nev/lamini-dataset-text",
         ),
-        buffer_dtype=jnp.float16,
+        buffer_dtype=jnp.float32,
+        use_devices=n_devices
     )
     trainer = BufferTrainer(config)
     trainer.train()

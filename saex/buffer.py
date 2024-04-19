@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Any, Optional
 
 import equinox as eqx
 import jax
@@ -43,9 +44,9 @@ class ActivationBuffer(eqx.Module):
                 .set(self._index, new_index))
 
     @partial(eqx.filter_jit, donate="first")
-    def sample_batch(self, state, batch_size, key=None):
+    def sample_batch(self, state, key=None):
         if key is None:
             key = utils.get_key()
         cache, n_valid = state.get(self._cache), state.get(self._n_valid)
-        index = jax.random.randint(key, (batch_size,), 0, n_valid)
+        index = jax.random.randint(key, (1,), 0, n_valid)[0]
         return state, cache[index]
