@@ -1,8 +1,9 @@
+from functools import partial
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from functools import partial
 from . import utils
 
 

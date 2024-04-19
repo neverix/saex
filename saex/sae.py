@@ -1,14 +1,14 @@
 import os
 from dataclasses import dataclass
-from typing import Dict, Literal, NamedTuple
+from typing import Dict, Literal, NamedTuple, Tuple, Union
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import safetensors
-from safetensors.flax import save_file
 from jax.experimental.checkify import checkify
 from jaxtyping import Array, Float, PyTree
+from safetensors.flax import save_file
 
 from . import utils
 from .geometric_median import geometric_median
@@ -32,7 +32,7 @@ class SAEConfig:
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
-    sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
+    sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh"], Tuple[Literal["recip"], float]] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold"] = "none"
@@ -146,6 +146,9 @@ class SAE(eqx.Module):
             return output, state
 
     def sparsity_loss(self, activations):
+        if isinstance(self.config.sparsity_loss_type, tuple):
+            assert self.config.sparsity_loss_type[0] == "recip"
+            return activations / (activations + self.config.sparsity_loss_type[1])
         if self.config.sparsity_loss_type == "l1":
             return jnp.abs(activations)
         elif self.config.sparsity_loss_type == "l1_sqrt":

@@ -9,10 +9,10 @@ import optax
 from tqdm.auto import trange
 
 from . import utils
+from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .sae import SAE, SAEConfig
 from .transformers_model import TransformersModelConfig
-from .buffer import ActivationBuffer
 
 
 @dataclass
@@ -168,7 +168,7 @@ class BufferTrainer(object):
 def main():
     layer = 1
     cache_size = 524288  # 2**19
-    cache_batch_size = 256
+    cache_batch_size = 512
     batch_size = 1024
     max_seq_len = 128
     config = BufferTrainerConfig(
@@ -185,7 +185,10 @@ def main():
         no_update=False,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=2e-4,
+            # sparsity_loss_type="l1_sqrt",
+            sparsity_loss_type=("recip", 0.1),
+            # sparsity_loss_type="l1",
+            sparsity_coefficient=3e-5,
             batch_size=batch_size,
             expansion_factor=32,
             use_encoder_bias=True,
@@ -195,7 +198,6 @@ def main():
             decoder_init_method="pseudoinverse",
             # decoder_bias_init_method="zeros",
             decoder_bias_init_method="geom_median",
-            sparsity_loss_type="l1",
             reconstruction_loss_type="mse_batchnorm",
             project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
