@@ -5,7 +5,10 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
+import jax.sharding as jshard
+import jax.experimental.mesh_utils as mesh_utils
 from tqdm.auto import trange
 
 from . import utils
@@ -45,12 +48,19 @@ class BufferTrainerConfig:
 class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
+
+        # TODO
+        self.mesh = mesh_utils.create_device_mesh((len(jax.devices()), 1))
+        self.sharding = jshard.PositionalSharding(self.mesh)
+        self.sharding_dp = self.sharding.replicate(0)
+        
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
             self.buffer = None
         else:
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
-                config.buffer_max_samples, config.n_dimensions, dtype=config.buffer_dtype)
+                config.buffer_max_samples, config.n_dimensions,
+                dtype=config.buffer_dtype, sharding=self.sharding_dp)
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
@@ -59,10 +69,14 @@ class BufferTrainer(object):
             if config.sae_restore:
                 print(f"Loading checkpoint ({config.sae_restore})...")
                 self.sae = self.sae.restore(config.sae_restore)
+            self.sae = eqx.filter_shard(self.sae, self.sharding_dp)
+            self.sae_state = eqx.filter_shard(self.sae_state, self.sharding_dp)
+        
         if model is None:
             print("Loading model...")
-            model = config.model_config.model_class(config.model_config)
+            model = config.model_config.model_class(config.model_config, sharding=self.sharding_dp)
         self.model = model
+        
         if create_dataset is None:
             print("Loading dataset...")
             create_dataset = create_iterable_dataset(config.dataset_config)
@@ -103,12 +117,17 @@ class BufferTrainer(object):
             sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
-        @partial(jax.jit, static_argnums=(2,), donate_argnums=(1, 3, 4))
+        @partial(jax.jit, donate_argnums=(1, 2, 3), static_argnums=(4, 5))
         def train_step(
-            batch, sae_params, sae_static, sae_state, opt_state, step
+            batch, sae_params, sae_state, opt_state, sae_static, optimizer, step
         ):
             batch = jnp.nan_to_num(batch)
+            sae_params, sae_state, opt_state = eqx.filter_shard(
+                (sae_params, sae_state, opt_state), self.sharding_dp)
+            
+            batch = eqx.filter_shard(batch, self.sharding)
             (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
+            sae_params = eqx.filter_shard(sae_params, self.sharding_dp)
             sae = eqx.combine(sae_params, sae_static)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
@@ -117,6 +136,8 @@ class BufferTrainer(object):
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae = eqx.combine(sae_params, sae_static)
             stats = sae.get_stats(sae_state, batch, sae_output)
+            sae_params, sae_state, opt_state = eqx.filter_shard(
+                (sae_params, sae_state, opt_state), self.sharding_dp)
             return sae_params, sae_state, opt_state, stats
 
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
@@ -146,9 +167,10 @@ class BufferTrainer(object):
                 self.buffer_state, batch = self.buffer.sample_batch(
                     self.buffer_state, self.config.sae_config.batch_size, subkey)
             
+            batch = eqx.filter_shard(batch, self.sharding)
             # TODO put update into 1 step
             sae_params, self.sae_state, opt_state, stats = train_step(
-                batch, sae_params, sae_static, self.sae_state, opt_state, iteration)
+                batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)
 
             bar.set_postfix(stats)
             # TODO: track in wandb or other logger:
@@ -167,9 +189,9 @@ class BufferTrainer(object):
 
 def main():
     layer = 1
-    cache_size = 524288  # 2**19
-    cache_batch_size = 1024
-    batch_size = 1024
+    cache_size = 524288 // 8  # 2**19
+    cache_batch_size = 1024 // 8
+    batch_size = 1024 // 8
     max_seq_len = 128
     config = BufferTrainerConfig(
         n_dimensions=768,
@@ -187,9 +209,10 @@ def main():
         sae_config=SAEConfig(
             n_dimensions=768,
             # sparsity_loss_type="l1_sqrt",
-            # sparsity_loss_type=("recip", 0.1),
-            sparsity_loss_type="l1",
-            sparsity_coefficient=1.2e-4,
+            sparsity_loss_type=("recip", 0.1),
+            # sparsity_loss_type="l1",
+            # sparsity_coefficient=1.2e-4,
+            sparsity_coefficient=0.4e-4,
             batch_size=batch_size,
             expansion_factor=32,
             # use_encoder_bias=False,

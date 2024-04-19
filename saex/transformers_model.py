@@ -10,15 +10,18 @@ import transformers
 class TransformersModel(object):
     # Extracts features from the residual stream
 
-    def __init__(self, config: "TransformersModelConfig"):
+    def __init__(self, config: "TransformersModelConfig", sharding=None):
         self.config = config
         model_config = transformers.AutoConfig.from_pretrained(config.model_name_or_path)
         for k, v in config.config_override.items():
             setattr(model_config, k, v)
-        self._model = jax.jit(
-            transformers.FlaxAutoModel.from_pretrained(
-                config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config),
-            static_argnames=("output_hidden_states",))
+        
+        self.sharding = sharding
+        model = transformers.FlaxAutoModel.from_pretrained(
+                config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
+        model.params = jax.device_put(model.params, sharding)
+        self._model = jax.jit(model, static_argnames=("output_hidden_states"))
+        
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -42,6 +45,7 @@ class TransformersModel(object):
                 truncation=True, max_length=self.config.max_seq_len)
         if self.config.cache_n > 0 and self._cache[0] is not None:
             tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
+        tokens = {k: jax.device_put(v, self.sharding) for k, v in tokens.items()}
         outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
         hidden_states = outputs.hidden_states[self.config.layer]
         if self.config.cache_n > 0 and self._cache[0] is None:
