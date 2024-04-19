@@ -67,7 +67,8 @@ class BufferTrainer(object):
         else:
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
                 config.buffer_max_samples, config.n_dimensions,
-                dtype=config.buffer_dtype, sharding=self.sharding_dp)
+                dtype=config.buffer_dtype)
+            self.buffer_state = eqx.filter_shard(self.buffer_state, self.sharding_dp)
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
@@ -152,7 +153,7 @@ class BufferTrainer(object):
             if (iteration % self.config.cache_every_steps == 0
                 or iteration < self.config.dry_run_steps
                 or self.buffer is None):
-                for _ in range(self.config.cache_acc):
+                for _ in range(self.config.cache_acc if self.buffer is not None else 1):
                     # cache more activations
                     texts = []
                     for _ in range(self.config.cache_batch_size):
@@ -254,8 +255,8 @@ def main():
         cache_every_steps=int(cache_size / batch_size / 2),
         cache_batch_size=cache_batch_size,
         cache_acc=int(cache_size / cache_batch_size / max_seq_len),
-        # buffer_max_samples=cache_size,
-        buffer_max_samples=0,
+        buffer_max_samples=cache_size,
+        # buffer_max_samples=0,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",

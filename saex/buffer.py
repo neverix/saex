@@ -17,12 +17,12 @@ class ActivationBuffer(eqx.Module):
     _n_valid: eqx.nn.StateIndex
     _index: eqx.nn.StateIndex
 
-    def __init__(self, max_samples, n_dimensions, dtype=jnp.float16, sharding=None):
+    def __init__(self, max_samples, n_dimensions, dtype=jnp.float16):
         self.max_samples = max_samples
         self.n_dimensions = n_dimensions
-        self._cache = eqx.nn.StateIndex(jnp.empty((max_samples, n_dimensions), dtype=dtype, device=sharding))
-        self._n_valid = eqx.nn.StateIndex(jax.device_put(jnp.array(0), sharding))
-        self._index = eqx.nn.StateIndex(jax.device_put(jnp.array(0), sharding))
+        self._cache = eqx.nn.StateIndex(jnp.empty((max_samples, n_dimensions), dtype=dtype))
+        self._n_valid = eqx.nn.StateIndex(jax.device_put(jnp.array(0)))
+        self._index = eqx.nn.StateIndex(jax.device_put(jnp.array(0)))
 
     @partial(eqx.filter_jit, donate="all-except-first")
     def __call__(self, activations, state, mask=None):
