@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 import jax
 import jax.numpy as jnp
@@ -40,13 +40,18 @@ class TransformersModel(object):
                 texts,
                 return_tensors="jax", padding="max_length",
                 truncation=True, max_length=self.config.max_seq_len)
+        if self.config.cache_n > 0 and self._cache[0] is not None:
+            tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
         outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
         hidden_states = outputs.hidden_states[self.config.layer]
         if self.config.cache_n > 0 and self._cache[0] is None:
             self._cache = outputs.past_key_values, hidden_states
         # TODO but I don't think we should output cached hidden states; those never change
 
-        return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": tokens["attention_mask"].reshape(-1)}
+        mask = tokens["attention_mask"].reshape(-1)
+        if not self.config.return_real_mask:
+            mask = jnp.ones_like(mask, dtype=jnp.bool)
+        return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
 
     # def eval_loss(self, texts, autoencoder):
     #     tokens = self._tokenizer(texts, return_tensors="jax", padding="max_length", truncation=True,
@@ -65,6 +70,7 @@ class TransformersModelConfig:
     concat_all: bool = False
     from_pt: bool = False
     config_override: Dict[str, Any] = field(default_factory=dict)
+    return_real_mask: bool = True
 
     @property
     def model_class(self) -> type:

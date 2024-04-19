@@ -12,49 +12,7 @@ from . import utils
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .sae import SAE, SAEConfig, restore_sae
 from .transformers_model import TransformersModelConfig
-
-
-class ActivationBuffer(eqx.Module):
-    # A simple ring buffer for activations
-
-    max_samples: int
-    n_dimensions: int
-    _cache: eqx.nn.StateIndex
-    _n_valid: eqx.nn.StateIndex
-    _index: eqx.nn.StateIndex
-
-    def __init__(self, max_samples, n_dimensions, dtype=jnp.float16):
-        self.max_samples = max_samples
-        self.n_dimensions = n_dimensions
-        self._cache = eqx.nn.StateIndex(jnp.empty((max_samples, n_dimensions), dtype=dtype))
-        self._n_valid = eqx.nn.StateIndex(jnp.array(0))
-        self._index = eqx.nn.StateIndex(jnp.array(0))
-
-    @partial(eqx.filter_jit, donate="all-except-first")
-    def __call__(self, activations, state, mask=None):
-        cache, n_valid, index = state.get(self._cache), state.get(self._n_valid), state.get(self._index)
-        if mask is None:
-            mask = jnp.ones(len(activations), dtype=jnp.bool)
-        offsets = jnp.cumsum(mask.astype(jnp.int32)) - 1
-        new_n_valid = jnp.minimum(n_valid + offsets[-1], self.max_samples)
-        # if n_valid == max_samples, we want to overwrite the oldest samples
-        indices = (index + offsets) % self.max_samples
-        new_index = (index + offsets[-1]) % self.max_samples
-        return (state
-                .set(self._cache,
-                     cache
-                     # TODO properly order indices so one .set() does the job
-                     .at[indices].set(0)
-                     .at[indices].add(activations.astype(cache.dtype) * mask[:, None]))
-                .set(self._n_valid, new_n_valid)
-                .set(self._index, new_index))
-
-    def sample_batch(self, state, key=None):
-        if key is None:
-            key = utils.get_key()
-        cache, n_valid = state.get(self._cache), state.get(self._n_valid)
-        index = jax.random.randint(key, (1,), 0, n_valid)[0]
-        return cache[index]
+from .buffer import ActivationBuffer
 
 
 @dataclass
@@ -178,10 +136,9 @@ class BufferTrainer(object):
             if self.buffer is None:
                 batch = activations
             else:
-                key, subkeys = jax.random.split(key, 2)
-                subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
-                batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
-                    self.buffer_state, subkeys).astype(jnp.float32)
+                key, subkey = jax.random.split(key, 2)
+                self.buffer_state, batch = self.buffer.sample_batch(
+                    self.buffer_state, self.config.sae_config.batch_size, subkey)
             
             # TODO put update into 1 step
             sae_params, self.sae_state, opt_state, stats = train_step(
@@ -206,11 +163,11 @@ def main():
         scheduler_cycle=10_000,
         train_iterations=10_000,
         dry_run_steps=0,
-        no_update=False,  # this is where the fun begins
+        no_update=True,  # this is where the fun begins
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=1.6e-3,
-            batch_size=2**15,
+            batch_size=2**10,
             expansion_factor=32,
             use_encoder_bias=True,
             remove_decoder_bias=True,
@@ -226,24 +183,25 @@ def main():
         ),
         # sae_restore=None,
         sae_restore="weights/bloom-gpt2s-1.safetensors",
-        cache_every_steps=1,
+        cache_every_steps=2**8,
         cache_batch_size=256,
-        cache_acc=1,
-        buffer_max_samples=2**18,
+        cache_acc=16,
+        buffer_max_samples=2**19,
         model_config=TransformersModelConfig(
-            # model_name_or_path="gpt2",
-            model_name_or_path="MBZUAI/LaMini-GPT-124M",
+            model_name_or_path="gpt2",
+            # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
             layer=1,
             max_seq_len=128,
             add_prefix="<|endoftext|>",
             concat_all=False,
             
-            cache_n=28,
+            # cache_n=25,
+            return_real_mask=False,
         ),
         dataset_config=IterableDatasetConfig(
-            # dataset_name="Skylion007/openwebtext",
-            dataset_name="nev/lamini-dataset-text",
+            dataset_name="Skylion007/openwebtext",
+            # dataset_name="nev/lamini-dataset-text",
         ),
         buffer_dtype=jnp.float16,
     )
