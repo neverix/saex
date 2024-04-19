@@ -57,6 +57,7 @@ class BufferTrainer(object):
             self.sharding = jshard.PositionalSharding(self.mesh)
             self.sharding_dp = self.sharding.replicate(0)
         except ValueError:
+            print("Warning: mesh size mismatch, falling back to single device")
             device = jax.devices()[0]
             self.sharding = device
             self.sharding_dp = device
@@ -175,12 +176,22 @@ class BufferTrainer(object):
                 # self.buffer_state, batch = self.buffer.sample_batch(
                 #     self.buffer_state, self.config.sae_config.batch_size, subkey)
                 subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
+                subkeys = eqx.filter_shard(subkeys, self.sharding)
                 self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
                                                     in_axes=(None, 0), out_axes=(None, 0))(
                     self.buffer_state,
-                    eqx.filter_shard(subkeys, self.sharding))
+                    subkeys)
             
             batch = eqx.filter_shard(batch, self.sharding)
+            
+            jax.debug.visualize_array_sharding(subkeys)
+            jax.debug.visualize_array_sharding(batch)
+            jax.debug.visualize_array_sharding(sae_params.W_dec)
+            jax.debug.visualize_array_sharding(activations)
+            jax.debug.visualize_array_sharding(self.buffer_state.get(self.buffer._cache))
+            jax.debug.visualize_array_sharding(self.buffer_state.get(self.buffer._n_valid))
+            print(activations._n_valid)
+            
             # TODO put update into 1 step
             sae_params, self.sae_state, opt_state, stats = train_step(
                 batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)

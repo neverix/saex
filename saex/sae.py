@@ -184,11 +184,12 @@ class SAE(eqx.Module):
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
             
+            residual = activations - reconstructions
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
-            diff_norm = jnp.linalg.norm(activations - reconstructions, axis=-1)
+            diff_norm = jnp.linalg.norm(residual, axis=-1)
             ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
             
-            ghost_loss = self.reconstruction_loss(ghost_recon, activations)
+            ghost_loss = self.reconstruction_loss(ghost_recon, jax.lax.stop_gradient(residual))
             recon_loss = self.reconstruction_loss(reconstructions, activations)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
