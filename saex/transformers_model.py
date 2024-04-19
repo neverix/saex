@@ -17,7 +17,7 @@ class TransformersModel(object):
             setattr(model_config, k, v)
         self._model = jax.jit(
             transformers.FlaxAutoModel.from_pretrained(
-                config.model_name_or_path, dtype=jnp.float32, from_pt=config.from_pt, config=model_config),
+                config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config),
             static_argnames=("output_hidden_states",))
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
@@ -71,6 +71,7 @@ class TransformersModelConfig:
     from_pt: bool = False
     config_override: Dict[str, Any] = field(default_factory=dict)
     return_real_mask: bool = True
+    dtype: jax.typing.DTypeLike = jnp.float32
 
     @property
     def model_class(self) -> type:

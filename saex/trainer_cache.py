@@ -10,7 +10,7 @@ from tqdm.auto import trange
 
 from . import utils
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
-from .sae import SAE, SAEConfig, restore_sae
+from .sae import SAE, SAEConfig
 from .transformers_model import TransformersModelConfig
 from .buffer import ActivationBuffer
 
@@ -24,6 +24,7 @@ class BufferTrainerConfig:
     scheduler_cycle: int
 
     train_iterations: int
+    save_steps: Optional[int]
     dry_run_steps: int
     no_update: bool
     
@@ -56,7 +57,7 @@ class BufferTrainer(object):
             self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config)
             if config.sae_restore:
                 print(f"Loading checkpoint ({config.sae_restore})...")
-                self.sae = restore_sae(self.sae, config.sae_restore)
+                self.sae = self.sae.restore(config.sae_restore)
         if model is None:
             print("Loading model...")
             model = config.model_config.model_class(config.model_config)
@@ -117,7 +118,9 @@ class BufferTrainer(object):
             return sae_params, sae_state, opt_state, stats
 
         for iteration in bar:
-            if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps or self.buffer is None:
+            if (iteration % self.config.cache_every_steps == 0
+                or iteration < self.config.dry_run_steps
+                or self.buffer is None):
                 for _ in range(self.config.cache_acc):
                     # cache more activations
                     texts = []
@@ -153,6 +156,10 @@ class BufferTrainer(object):
             # - % variance explained
             # - learning rate
             # - norm ratio
+            
+            if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
+                self.sae = eqx.combine(sae_params, sae_static)
+                self.sae.save(f"weights/gpt2s-{self.config.model_config.layer}-tuned.safetensors")
 
 
 def main():
@@ -162,8 +169,9 @@ def main():
         scheduler_warmup=100,
         scheduler_cycle=10_000,
         train_iterations=10_000,
+        save_steps=100,
         dry_run_steps=0,
-        no_update=True,  # this is where the fun begins
+        no_update=False,
         sae_config=SAEConfig(
             n_dimensions=768,
             sparsity_coefficient=1.6e-3,

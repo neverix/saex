@@ -1,14 +1,12 @@
 import os
-from collections import namedtuple
 from dataclasses import dataclass
-from functools import partial
 from typing import Dict, Literal, NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 import safetensors
+from safetensors.flax import save_file
 from jax.experimental.checkify import checkify
 from jaxtyping import Array, Float, PyTree
 
@@ -229,10 +227,18 @@ class SAE(eqx.Module):
             max_time_since_fired=time_since_fired.max(),
         )
 
-def restore_sae(sae: SAE, weights_path: os.PathLike):
-    with safetensors.safe_open(weights_path, "flax") as f:
-        sae = eqx.tree_at(lambda s: s.W_enc, sae, f.get_tensor("W_enc"))
-        sae = eqx.tree_at(lambda s: s.b_enc, sae, f.get_tensor("b_enc"))
-        sae = eqx.tree_at(lambda s: s.W_dec, sae, f.get_tensor("W_dec"))
-        sae = eqx.tree_at(lambda s: s.b_dec, sae, f.get_tensor("b_dec"))
-    return sae
+    def restore(self, weights_path: os.PathLike):
+        with safetensors.safe_open(weights_path, "flax") as f:
+            self = eqx.tree_at(lambda s: s.W_enc, self, f.get_tensor("W_enc"))
+            self = eqx.tree_at(lambda s: s.b_enc, self, f.get_tensor("b_enc"))
+            self = eqx.tree_at(lambda s: s.W_dec, self, f.get_tensor("W_dec"))
+            self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec"))
+        return self
+
+    def save(self, weights_path: os.PathLike):
+        save_file({
+            "W_enc": self.W_enc,
+            "b_enc": self.b_enc,
+            "W_dec": self.W_dec * self.s[:, None],
+            "b_dec": self.b_dec,
+        }, weights_path)
