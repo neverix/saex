@@ -130,7 +130,7 @@ class BufferTrainer(object):
                     for _ in range(self.config.cache_batch_size):
                         texts.append(next(dataset_iterator))
                     activations, model_misc = self.model(texts)
-                    if self.buffer is not None:
+                    if self.buffer is not None and iteration == 0:
                         self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
             
             if iteration < self.config.dry_run_steps:
@@ -168,15 +168,16 @@ class BufferTrainer(object):
 def main():
     layer = 1
     cache_size = 524288  # 2**19
-    cache_batch_size = 512
+    cache_batch_size = 1024
     batch_size = 1024
     max_seq_len = 128
     config = BufferTrainerConfig(
         n_dimensions=768,
-        lr=1e-3,
+        lr=5e-4,
+        # lr=1e-3,
         scheduler_warmup=128,
         scheduler_cycle=None,
-        train_iterations=10_000,
+        train_iterations=100_000,
         save_steps=1_000,
         # save_steps=None,
         save_path=f"weights/gpt2-{layer}.safetensors",
@@ -186,25 +187,26 @@ def main():
         sae_config=SAEConfig(
             n_dimensions=768,
             # sparsity_loss_type="l1_sqrt",
-            sparsity_loss_type=("recip", 0.1),
-            # sparsity_loss_type="l1",
-            sparsity_coefficient=3e-5,
+            # sparsity_loss_type=("recip", 0.1),
+            sparsity_loss_type="l1",
+            sparsity_coefficient=1.2e-4,
             batch_size=batch_size,
             expansion_factor=32,
+            # use_encoder_bias=False,
             use_encoder_bias=True,
             remove_decoder_bias=True,
-            encoder_init_method="orthogonal",
+            encoder_init_method="kaiming",
             # https://tenor.com/view/gun-tears-cat-point-gun-crying-cat-gif-17741904
             decoder_init_method="pseudoinverse",
             # decoder_bias_init_method="zeros",
             decoder_bias_init_method="geom_median",
             reconstruction_loss_type="mse_batchnorm",
-            project_updates_from_dec=True,
+            project_updates_from_dec=False,
             # death_loss_type="sparsity_threshold",
             death_loss_type="ghost_grads",
             # death_loss_type="none",
             death_penalty_threshold=1e-5,
-            dead_after=8_000,
+            dead_after=5_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),
