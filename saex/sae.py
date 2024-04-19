@@ -165,14 +165,14 @@ class SAE(eqx.Module):
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
             post_relu = jax.nn.relu(pre_relu)
-            sparsity = self.sparsity_loss(post_relu)
+            sparsity = self.sparsity_loss(post_relu).mean(0)
             log_sparsity = jnp.log10(sparsity + eps)
             # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.avg_loss_sparsity) + eps) - log_sparsity)
             # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - (log_sparsity + offset)).sum(-1)
             return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - log_sparsity).sum(-1)
         elif self.config.death_loss_type == "ghost_grads":
             dead = state.get(self.time_since_fired) > self.config.dead_after
-            post_exp = jnp.where(dead, 0, jnp.exp(pre_relu) * self.s)
+            post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
             
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
