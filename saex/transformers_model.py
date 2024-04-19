@@ -12,7 +12,8 @@ class TransformersModel(object):
 
     def __init__(self, config: "TransformersModelConfig"):
         self.config = config
-        self._model = jax.jit(transformers.FlaxAutoModel.from_pretrained(config.model_name_or_path))
+        self._model = jax.jit(transformers.FlaxAutoModel.from_pretrained(config.model_name_or_path, dtype=jnp.float16),
+                              static_argnames=("output_hidden_states",))
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
@@ -39,7 +40,6 @@ class TransformersModel(object):
         if self.config.cache_n > 0 and self._cache[0] is None:
             self._cache = outputs.past_key_values, hidden_states
         # TODO but I don't think we should output cached hidden states; those never change
-        print(hidden_states.shape)
 
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": tokens["attention_mask"].reshape(-1)}
 

@@ -84,8 +84,12 @@ class BufferTrainerConfig:
 class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
-        self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
-            config.buffer_max_samples, config.n_dimensions, dtype=config.buffer_dtype)
+        if self.config.buffer_max_samples < self.config.sae_config.batch_size:
+            print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
+            self.buffer = None
+        else:
+            self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
+                config.buffer_max_samples, config.n_dimensions, dtype=config.buffer_dtype)
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
@@ -137,19 +141,31 @@ class BufferTrainer(object):
             sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
-        import safetensors as st
-        # with st.safe_open("weights/gpt2-l1.safetensors", framework="flax") as f:
-        #     cache = f.get_tensor("cache")
-        #     batch = cache.reshape(-1, cache.shape[-1])
+        @partial(jax.jit, static_argnums=(2,), donate_argnums=(0, 1, 3, 4))
+        def train_step(
+            batch, sae_params, sae_static, sae_state, opt_state, step
+        ):
+            batch = jnp.nan_to_num(batch)
+            (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
+            sae = eqx.combine(sae_params, sae_static)
+            if not self.config.no_update:
+                updates, opt_state = optimizer.update(grad, opt_state, sae_params)
+                sae = sae.apply_updates(updates, sae_state,
+                                        batch, sae_output, step)
+                sae_params, _ = eqx.partition(sae, is_trainable)
+            sae = eqx.combine(sae_params, sae_static)
+            stats = sae.get_stats(sae_state, batch, sae_output)
+            return sae_params, sae_state, opt_state, stats
 
         for iteration in bar:
-            if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps:
+            if iteration % self.config.cache_every_steps == 0 or iteration < self.config.dry_run_steps or self.buffer is None:
                 # cache more activations
                 texts = []
                 for _ in range(self.config.cache_batch_size):
                     texts.append(next(dataset_iterator))
                 activations, model_misc = self.model(texts)
-                self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
+                if self.buffer is not None:
+                    self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
             
             if iteration < self.config.dry_run_steps:
                 bar.set_description("Caching activations")
@@ -157,22 +173,18 @@ class BufferTrainer(object):
             bar.set_description("Training SAE")
 
             # train SAE
-            key, subkeys = jax.random.split(key, 2)
-            subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
-            batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
-                self.buffer_state, subkeys).astype(jnp.float32)
-            batch = jnp.nan_to_num(batch)
+            if self.buffer is None:
+                batch = activations
+            else:
+                key, subkeys = jax.random.split(key, 2)
+                subkeys = jax.random.split(subkeys, self.config.sae_config.batch_size)
+                batch = jax.vmap(self.buffer.sample_batch, in_axes=(None, 0))(
+                    self.buffer_state, subkeys).astype(jnp.float32)
             
             # TODO put update into 1 step
-            (_, (sae_output, self.sae_state)), grad = loss_fn(sae_params, sae_static, self.sae_state, batch)
-            if not self.config.no_update:
-                updates, opt_state = optimizer.update(grad, opt_state, sae_params)
-                self.sae = self.sae.apply_updates(updates, self.sae_state,
-                                                batch, sae_output,
-                                                int(self.sae_state.get(self.sae.num_steps)))
-                sae_params, sae_static = eqx.partition(self.sae, is_trainable)
-            
-            stats = self.sae.get_stats(self.sae_state, batch, sae_output)
+            sae_params, self.sae_state, opt_state, stats = train_step(
+                batch, sae_params, sae_static, self.sae_state, opt_state, iteration)
+
             bar.set_postfix(stats)
             # TODO: track in wandb or other logger:
             # - L0
@@ -187,45 +199,44 @@ class BufferTrainer(object):
 def main():
     config = BufferTrainerConfig(
         n_dimensions=768,
-        lr=1e-2,
-        scheduler_warmup=20,
+        lr=1e-3,
+        scheduler_warmup=100,
         scheduler_cycle=10_000,
-        train_iterations=100_000,
+        train_iterations=10_000,
         dry_run_steps=0,
-        # no_update=False,
-        no_update=True,
+        no_update=False,  # this is where the fun begins
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_coefficient=2e-4,
+            sparsity_coefficient=1.6e-3,
             batch_size=2**15,
             expansion_factor=32,
             use_encoder_bias=True,
             remove_decoder_bias=True,
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="zeros",
             sparsity_loss_type="l1",
             reconstruction_loss_type="mse",
             project_updates_from_dec=True,
-            use_ghost_grads=True,
+            use_ghost_grads=False,
             dead_after=200,
             restrict_dec_norm="exact",
             stat_tracking_epsilon=0.05,
         ),
         # sae_restore=None,
         sae_restore="weights/bloom-gpt2s-1.safetensors",
-        cache_every_steps=8,
-        cache_batch_size=128,
+        cache_every_steps=1,
+        cache_batch_size=256,
         model_config=TransformersModelConfig(
             model_name_or_path="gpt2",
             layer=1,
             max_seq_len=128,
             add_prefix="<|endoftext|>",
-            concat_all=True,
+            concat_all=False,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext",
         ),
-        buffer_max_samples=2 ** 19,
+        buffer_max_samples=0,
         buffer_dtype=jnp.float16,
     )
     trainer = BufferTrainer(config)

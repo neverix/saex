@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Dict, Literal, NamedTuple
 
+from jax.experimental.checkify import checkify
 import safetensors
 import equinox as eqx
 import jax
@@ -156,7 +157,11 @@ class SAE(eqx.Module):
         elif self.config.reconstruction_loss_type == "l1":
             return jnp.abs(output - target)
 
-    def apply_updates(self, updates: PyTree[Float], state: eqx.nn.State, last_input: Float[Array, "b f"], last_output: SAEOutput, step: int):
+    def apply_updates(self, updates: PyTree[Float],
+                      state: eqx.nn.State,
+                      last_input: Float[Array, "b f"],
+                      last_output: SAEOutput,
+                      step: int):
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):
                 return W_dec_grad - jnp.einsum("h f, h -> h f",
@@ -171,12 +176,15 @@ class SAE(eqx.Module):
         w_dec_selector = lambda x: x.W_dec
         updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
         
-        # at the end of our first step
-        if step == 1:
+        # at the end of our first step, compute mean
+        def adjust_mean(b_dec):
             if self.config.decoder_bias_init_method == "mean":
-                updated = eqx.tree_at(lambda self: self.b_dec, updated, jnp.mean(last_input - last_output.output, axis=0))
+                b_dec = b_dec + jnp.mean(last_input - last_output.output, axis=0)
             elif self.config.decoder_bias_init_method == "geom_median":
-                updated = eqx.tree_at(lambda self: self.b_dec, updated, geometric_median(last_input - last_output.output))
+                b_dec = b_dec + geometric_median(last_input - last_output.output)
+            return b_dec
+        updated = eqx.tree_at(lambda s: s.b_dec, updated,
+                              jax.lax.switch(jnp.astype(step == 1, jnp.int32), (adjust_mean, lambda x: x), updated.b_dec))
         
         return updated
     
@@ -205,20 +213,20 @@ class SAE(eqx.Module):
     
     def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):
         num_steps = state.get(self.num_steps)
-        assert num_steps > 0
+        checkify(num_steps > 0, "num_steps must be positive")
         bias_corr = 1 - (1 - self.config.stat_tracking_epsilon) ** num_steps
-        time_since_fired = np.asarray(state.get(self.time_since_fired))
+        time_since_fired = state.get(self.time_since_fired)
         return dict(
             loss=last_output.loss,
-            loss_sparsity=float(last_output.losses["sparsity"].sum(-1).mean()),
-            loss_reconstruction=float(last_output.losses["reconstruction"].mean()),
-            # l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
-            l0=(state.get(self.avg_l0) / bias_corr).sum(),
-            dead=float((time_since_fired > self.config.dead_after).mean()),
-            var_explained=float(jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
-                                 * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)
-                                 ).mean(0)).mean()),
-            max_time_since_fired=int(time_since_fired.max()),
+            loss_sparsity=last_output.losses["sparsity"].sum(-1).mean(),
+            loss_reconstruction=last_output.losses["reconstruction"].mean(),
+            l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
+            # l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            dead=(time_since_fired > self.config.dead_after).mean(),
+            var_explained=jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
+                                      * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)
+                                      ).mean(0)).mean(),
+            max_time_since_fired=time_since_fired.max(),
         )
 
 def restore_sae(sae: SAE, weights_path: os.PathLike):
