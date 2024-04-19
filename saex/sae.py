@@ -34,10 +34,12 @@ class SAEConfig:
     sparsity_loss_type: Literal["l1", "l1_sqrt", "tanh"] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
-    use_ghost_grads: bool = False
+    death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold"] = "none"
     dead_after: int = 50
+    death_penalty_threshold: float = 1e-5
+    death_penalty_coefficient: float = 1.0
     
-    stat_tracking_epsilon: float = 0.05
+    sparsity_tracking_epsilon: float = 0.05
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -115,17 +117,17 @@ class SAE(eqx.Module):
         reconstruction_loss = self.reconstruction_loss(out, activations)
         if state is not None:
             state = state.set(self.avg_loss_sparsity,
-                                sparsity_loss.mean(0) * self.config.stat_tracking_epsilon
-                                + state.get(self.avg_loss_sparsity) * (1 - self.config.stat_tracking_epsilon))
+                                sparsity_loss.mean(0) * self.config.sparsity_tracking_epsilon
+                                + state.get(self.avg_loss_sparsity) * (1 - self.config.sparsity_tracking_epsilon))
             state = state.set(self.avg_l0,
-                                active.mean(0) * self.config.stat_tracking_epsilon
-                                + state.get(self.avg_l0) * (1 - self.config.stat_tracking_epsilon))
+                                active.mean(0) * self.config.sparsity_tracking_epsilon
+                                + state.get(self.avg_l0) * (1 - self.config.sparsity_tracking_epsilon))
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
-        if state is not None and self.config.use_ghost_grads:
-            ghost_loss = self.compute_ghost_loss(state, activations, out, pre_relu)
-            losses = {**losses, "ghost": ghost_loss}
-            loss = loss + ghost_loss.mean()
+        if state is not None:  # we can only tell if a neuron is dead if we know if it was alive in the first place
+            death_loss = self.compute_death_loss(state, activations, out, pre_relu)
+            losses = {**losses, "death": death_loss}
+            loss = loss + death_loss.mean() * self.config.death_penalty_coefficient
         output = SAEOutput(
             output=out,
             loss=loss,
@@ -145,7 +147,7 @@ class SAE(eqx.Module):
         elif self.config.sparsity_loss_type == "tanh":
             return jnp.tanh(activations)
         else:
-            raise ValueError(f"Unknown sparsity_loss_type {self.config.sparsity_loss_type}")
+            raise ValueError(f"Unknown sparsity loss type: \"{self.config.sparsity_loss_type}\"")
     
     def reconstruction_loss(self, output, target, eps=1e-6):
         if self.config.reconstruction_loss_type == "mse":
@@ -157,6 +159,33 @@ class SAE(eqx.Module):
             return jnp.abs(output - target)
         else:
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
+    
+    def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-3):
+        if self.config.death_loss_type == "none":
+            return jnp.zeros(reconstructions.shape[:-1])
+        elif self.config.death_loss_type == "sparsity_threshold":
+            post_relu = jax.nn.relu(pre_relu)
+            sparsity = self.sparsity_loss(post_relu)
+            log_sparsity = jnp.log10(sparsity + eps)
+            # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.avg_loss_sparsity) + eps) - log_sparsity)
+            # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - (log_sparsity + offset)).sum(-1)
+            return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - log_sparsity).sum(-1)
+        elif self.config.death_loss_type == "ghost_grads":
+            dead = state.get(self.time_since_fired) > self.config.dead_after
+            post_exp = jnp.where(dead, 0, jnp.exp(pre_relu) * self.s)
+            ghost_recon = post_exp @ self.W_dec
+            
+            ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
+            diff_norm = jnp.linalg.norm(activations - reconstructions, axis=-1)
+            ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
+            
+            ghost_loss = self.reconstruction_loss(ghost_recon, activations)
+            recon_loss = self.reconstruction_loss(reconstructions, activations)
+            ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
+            
+            return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
+        else:
+            raise ValueError(f"Unknown death loss type: \"{self.config.death_loss_type}\"")
 
     def apply_updates(self, updates: PyTree[Float],
                       state: eqx.nn.State,
@@ -195,27 +224,12 @@ class SAE(eqx.Module):
         elif self.config.restrict_dec_norm == "lte":
             return w_dec / jnp.maximum(1, eps + jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         return w_dec
-    
-    def compute_ghost_loss(self, state, activations, reconstructions, pre_relu, eps=1e-3):
-        dead = state.get(self.time_since_fired) > self.config.dead_after
-        post_exp = jnp.where(dead, 0, jnp.exp(pre_relu) * self.s)
-        ghost_recon = post_exp @ self.W_dec
-        
-        ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
-        diff_norm = jnp.linalg.norm(activations - reconstructions, axis=-1)
-        ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
-        
-        ghost_loss = self.reconstruction_loss(ghost_recon, activations)
-        recon_loss = self.reconstruction_loss(reconstructions, activations)
-        ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
-        
-        return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss))
         
     
-    def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput):
+    def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput, eps=1e-12):
         num_steps = state.get(self.num_steps)
         checkify(num_steps > 0, "num_steps must be positive")
-        bias_corr = 1 - (1 - self.config.stat_tracking_epsilon) ** num_steps
+        bias_corr = 1 - (1 - self.config.sparsity_tracking_epsilon) ** num_steps
         time_since_fired = state.get(self.time_since_fired)
         return dict(
             loss=last_output.loss,
@@ -224,8 +238,8 @@ class SAE(eqx.Module):
             l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
             # l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=(time_since_fired > self.config.dead_after).mean(),
-            var_explained=jnp.square(((last_input - last_input.mean(axis=0)) / last_input.std(axis=0)
-                                      * (last_output.output - last_output.output.mean(axis=0)) / last_output.output.std(axis=0)
+            var_explained=jnp.square(((last_input - last_input.mean(axis=0)) / (last_input.std(axis=0) + eps)
+                                      * (last_output.output - last_output.output.mean(axis=0)) / (last_output.output.std(axis=0) + eps)
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
         )
