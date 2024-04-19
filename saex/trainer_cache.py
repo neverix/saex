@@ -238,9 +238,12 @@ def main():
             max_seq_len=128,
             add_prefix="<|endoftext|>",
             concat_all=False,
+            
+            cache_n=28,
         ),
         dataset_config=IterableDatasetConfig(
-            dataset_name="Skylion007/openwebtext",
+            # dataset_name="Skylion007/openwebtext",
+            dataset_name="nev/lamini-dataset-text",
         ),
         buffer_dtype=jnp.float16,
     )

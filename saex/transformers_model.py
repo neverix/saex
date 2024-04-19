@@ -1,9 +1,9 @@
 import os
-from dataclasses import dataclass
-from typing import List
-import jax.numpy as jnp
-import jax
+from dataclasses import dataclass, field
+from typing import Dict, List, Any
 
+import jax
+import jax.numpy as jnp
 import transformers
 
 
@@ -12,9 +12,12 @@ class TransformersModel(object):
 
     def __init__(self, config: "TransformersModelConfig"):
         self.config = config
+        model_config = transformers.AutoConfig.from_pretrained(config.model_name_or_path)
+        for k, v in config.config_override.items():
+            setattr(model_config, k, v)
         self._model = jax.jit(
             transformers.FlaxAutoModel.from_pretrained(
-                config.model_name_or_path, dtype=jnp.float32, from_pt=config.from_pt),
+                config.model_name_or_path, dtype=jnp.float32, from_pt=config.from_pt, config=model_config),
             static_argnames=("output_hidden_states",))
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
@@ -61,6 +64,8 @@ class TransformersModelConfig:
     add_prefix: str = ""
     concat_all: bool = False
     from_pt: bool = False
+    config_override: Dict[str, Any] = field(default_factory=dict)
+
     @property
     def model_class(self) -> type:
         return TransformersModel
