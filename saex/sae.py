@@ -188,12 +188,14 @@ class SAE(eqx.Module):
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
+            # eps = 1e-5
             post_relu = jax.nn.relu(pre_relu)
             sparsity = self.sparsity_loss(post_relu).mean(0)
-            log_sparsity = jnp.log10(sparsity + eps)
+            # log_sparsity = jnp.nan_to_num(jnp.log10(sparsity + eps))
             # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.avg_loss_sparsity) + eps) - log_sparsity)
-            # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - (log_sparsity + offset)).sum(-1)
-            return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold) + eps) - log_sparsity).sum(-1)
+            offset = 0
+            # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - (log_sparsity + offset)).sum(-1)
+            return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
         elif self.config.death_loss_type == "ghost_grads":
             dead = state.get(self.time_since_fired) > self.config.dead_after
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
@@ -278,11 +280,12 @@ class SAE(eqx.Module):
                 # https://github.com/saprmarks/dictionary_learning/blob/main/training.py#L105
                 alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[None, :]), axis=-1).mean()
                 sampled_vecs = jax.random.choice(key, last_input, (self.d_hidden,), replace=True, axis=0)
+                sampled_vecs = sampled_vecs / jnp.linalg.norm(sampled_vecs, axis=-1, keepdims=True)
                 W_enc = jnp.where(dead[None, :],
                                   (sampled_vecs * alive_norm * 0.2).T,
                                   updated.W_enc)
                 W_dec = jnp.where(dead[:, None],
-                                  (W_enc / jnp.linalg.norm(sampled_vecs, axis=-1)[None, :]).T,
+                                  sampled_vecs,
                                   updated.W_dec)
                 b_enc = jnp.where(dead, 0, updated.b_enc)
             updated = eqx.tree_at(lambda s: s.W_enc, updated, W_enc)
