@@ -40,7 +40,7 @@ class SAEConfig:
     death_penalty_threshold: float = 1e-5
     death_penalty_coefficient: float = 1.0
     resample_every: int = 1e10
-    resample_type: Literal["boom", "sample_inputs"] = "boom"
+    resample_type: Literal["boom", "sample_inputs"] = "sample_inputs"
     
     sparsity_tracking_epsilon: float = 0.05
 
@@ -258,8 +258,8 @@ class SAE(eqx.Module):
                                 updated.W_dec)
             elif self.config.resample_type == "sample_inputs":
                 # https://github.com/saprmarks/dictionary_learning/blob/main/training.py#L105
-                alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[:, None]), axis=-1).mean()
-                sampled_vecs = jax.random.choice(key, last_input, (len(W_enc),), replace=True, axis=0)
+                alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[None, :]), axis=-1).mean()
+                sampled_vecs = jax.random.choice(key, last_input, (self.d_hidden,), replace=True, axis=0)
                 W_enc = jnp.where(dead[None, :],
                                   (sampled_vecs * alive_norm * 0.2).T,
                                   updated.W_enc)
@@ -270,18 +270,30 @@ class SAE(eqx.Module):
             updated = eqx.tree_at(lambda s: s.W_enc, updated, W_enc)
             updated = eqx.tree_at(lambda s: s.b_enc, updated, b_enc)
             updated = eqx.tree_at(lambda s: s.W_dec, updated, W_dec)
-
-            print(opt_state)
+            updated = eqx.tree_at(lambda s: s.s, updated, jnp.where(dead, 1, updated.s))
             
+            # reset momentum and variance
+            # assumes adam is the 0th gradient processor
+            get_adam = lambda s: s[0][0]
+            adam = get_adam(opt_state)
+    
+            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))
+            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_enc, opt_state, jnp.where(dead, 0, adam.mu.b_enc))
+            # opt_state = eqx.tree_at(lambda s: s[adam_idx].mu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].mu.W_dec))
+
+            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.nu.W_enc))
+            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_enc, opt_state, jnp.where(dead, 0, adam.nu.b_enc))
+            # opt_state = eqx.tree_at(lambda s: s[adam_idx].nu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].nu.W_dec))
+
             state = state.set(self.time_since_fired, jnp.where(dead, 0, state.get(self.time_since_fired)))
-            return updated, state
+            return updated, state, opt_state
         updated_params, updated_static = eqx.partition(updated, eqx.is_array)
-        updated_params, state = jax.lax.switch(jnp.astype(step % self.config.resample_every == self.config.resample_every - 1,
-                                                     jnp.int32),
-                                          (lambda *a: a, resample),
-                                          updated_params, state, opt_state)
+        updated_params, state, opt_state = jax.lax.switch(
+            jnp.astype(step % self.config.resample_every == self.config.resample_every - 1, jnp.int32),
+            (lambda *a: a, resample),
+            updated_params, state, opt_state)
         updated = eqx.combine(updated_params, updated_static)
-        
+
         return updated, state, opt_state
     
     def normalize_w_dec(self, w_dec, eps=1e-6):

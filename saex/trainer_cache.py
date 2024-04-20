@@ -269,7 +269,7 @@ def main():
             use_encoder_bias=False,
             # use_encoder_bias=True,
             remove_decoder_bias=True,
-            encoder_init_method="kaiming",
+            encoder_init_method="orthogonal",
             decoder_init_method="pseudoinverse",
             decoder_bias_init_method="zeros",
             # decoder_bias_init_method="geom_median",
