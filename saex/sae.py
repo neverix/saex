@@ -32,7 +32,7 @@ class SAEConfig:
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
-    sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh"], Tuple[Literal["recip"], float]] = "l1"
+    sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh", "hoyer"], Tuple[Literal["recip"], float]] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
@@ -166,6 +166,10 @@ class SAE(eqx.Module):
             return activations / (activations + self.config.sparsity_loss_type[1])
         if self.config.sparsity_loss_type == "l1":
             return jnp.abs(activations)
+        elif self.config.sparsity_loss_type == "hoyer":
+            # every other loss is per-dimension
+            # can't use sparsity_threshold
+            return (jnp.square(jnp.abs(activations).sum(-1)) / jnp.square(activations).sum(-1))[:, None]
         elif self.config.sparsity_loss_type == "l1_sqrt":
             return jnp.sqrt(jnp.abs(activations))
         elif self.config.sparsity_loss_type == "tanh":
@@ -280,12 +284,12 @@ class SAE(eqx.Module):
                 # https://github.com/saprmarks/dictionary_learning/blob/main/training.py#L105
                 alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[None, :]), axis=-1).mean()
                 sampled_vecs = jax.random.choice(key, last_input, (self.d_hidden,), replace=True, axis=0)
-                sampled_vecs = sampled_vecs / jnp.linalg.norm(sampled_vecs, axis=-1, keepdims=True)
+                norm_vecs = sampled_vecs / jnp.linalg.norm(sampled_vecs, axis=-1, keepdims=True)
                 W_enc = jnp.where(dead[None, :],
                                   (sampled_vecs * alive_norm * 0.2).T,
                                   updated.W_enc)
                 W_dec = jnp.where(dead[:, None],
-                                  sampled_vecs,
+                                  norm_vecs,
                                   updated.W_dec)
                 b_enc = jnp.where(dead, 0, updated.b_enc)
             updated = eqx.tree_at(lambda s: s.W_enc, updated, W_enc)
