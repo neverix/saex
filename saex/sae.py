@@ -35,7 +35,7 @@ class SAEConfig:
     sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh"], Tuple[Literal["recip"], float]] = "l1"
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
-    death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold"] = "none"
+    death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
     dead_after: int = 50
     death_penalty_threshold: float = 1e-5
     death_penalty_coefficient: float = 1.0
@@ -194,6 +194,8 @@ class SAE(eqx.Module):
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
             return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
+        elif self.config.death_loss_type == "dm_ghost_grads":
+            1/0
         else:
             raise ValueError(f"Unknown death loss type: \"{self.config.death_loss_type}\"")
 
@@ -245,8 +247,8 @@ class SAE(eqx.Module):
             loss=last_output.loss,
             loss_sparsity=last_output.losses["sparsity"].sum(-1).mean(),
             loss_reconstruction=last_output.losses["reconstruction"].mean(),
-            l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
-            # l0=(state.get(self.avg_l0) / bias_corr).sum(),
+            # l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
+            l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=(time_since_fired > self.config.dead_after).mean(),
             var_explained=jnp.square(((last_input - last_input.mean(axis=0)) / (last_input.std(axis=0) + eps)
                                       * (last_output.output - last_output.output.mean(axis=0)) / (last_output.output.std(axis=0) + eps)

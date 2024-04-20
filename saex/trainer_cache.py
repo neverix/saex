@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional
+from typing import Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -10,6 +10,7 @@ import jax.sharding as jshard
 import jax_smi
 import numpy as np
 import optax
+import wandb
 from tqdm.auto import trange
 
 from . import utils
@@ -23,7 +24,11 @@ from .transformers_model import TransformersModelConfig
 class BufferTrainerConfig:
     n_dimensions: int
 
+    use_wandb: Optional[Tuple[str, str]]
+
     lr: float
+    beta1: float
+    beta2: float
     scheduler_warmup: int
     scheduler_cycle: int
 
@@ -94,6 +99,10 @@ class BufferTrainer(object):
     def train(self):
         print("Training for", self.config.train_iterations, "iterations")
         
+        if self.config.use_wandb:
+            entity, project = self.config.use_wandb
+            run = wandb.init(entity=entity, project=project)
+        
         dataset_iterator = iter(self.create_dataset())
         
         is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in "f"
@@ -108,7 +117,7 @@ class BufferTrainer(object):
         n_cycles = int(self.config.train_iterations / scheduler_cycle)
         optimizer = optax.chain(
             # optax.clip_by_global_norm(1.0),
-            optax.adam(self.config.lr),
+            optax.adam(self.config.lr, b1=self.config.beta1, b2=self.config.beta2),
             optax.scale_by_schedule(
                 optax.join_schedules(
                     [optax.linear_schedule(0, 1, self.config.scheduler_warmup)]
@@ -184,31 +193,23 @@ class BufferTrainer(object):
             
             batch = eqx.filter_shard(batch, self.sharding)
             
-            jax.debug.visualize_array_sharding(subkeys)
-            jax.debug.visualize_array_sharding(batch)
-            jax.debug.visualize_array_sharding(sae_params.W_dec)
-            jax.debug.visualize_array_sharding(activations)
-            jax.debug.visualize_array_sharding(self.buffer_state.get(self.buffer._cache))
-            jax.debug.visualize_array_sharding(self.buffer_state.get(self.buffer._n_valid))
-            print(activations._n_valid)
-            
             # TODO put update into 1 step
             sae_params, self.sae_state, opt_state, stats = train_step(
                 batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)
 
             bar.set_postfix(stats)
+            
+            if self.config.use_wandb:
+                run.log(stats)
+            
             # TODO: track in wandb or other logger:
-            # - L0
-            # - reconstruction loss
-            # - loss
-            # - number of dead features (tracked using own window)
-            # - % variance explained
             # - learning rate
             # - norm ratio
             
             if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
                 self.sae = eqx.combine(sae_params, sae_static)
                 self.sae.save(self.config.save_path)
+        run.finish()
 
 
 def main():
@@ -223,13 +224,16 @@ def main():
     max_seq_len = 128
     config = BufferTrainerConfig(
         n_dimensions=768,
-        lr=5e-4,
+        lr=6e-4,
         # lr=1e-3,
+        beta1=0.99,
+        beta2=0.999,
         scheduler_warmup=128,
         scheduler_cycle=None,
         train_iterations=100_000,
-        save_steps=1_000,
-        # save_steps=None,
+        # save_steps=1_000,
+        save_steps=None,
+        use_wandb=("neverix", "saex"),
         save_path=f"weights/gpt2-{layer}.safetensors",
         # save_path=f"weights/gpt2s-{layer}-tuned.safetensors",
         dry_run_steps=0,
@@ -237,27 +241,27 @@ def main():
         sae_config=SAEConfig(
             n_dimensions=768,
             # sparsity_loss_type="l1_sqrt",
-            sparsity_loss_type=("recip", 0.1),
-            # sparsity_loss_type="l1",
+            # sparsity_loss_type=("recip", 0.1),
+            sparsity_loss_type="l1",
             # sparsity_coefficient=1.2e-4,
-            sparsity_coefficient=0.4e-4,
+            sparsity_coefficient=8e-5,
             batch_size=batch_size,
             expansion_factor=32,
-            # use_encoder_bias=False,
-            use_encoder_bias=True,
+            use_encoder_bias=False,
+            # use_encoder_bias=True,
             remove_decoder_bias=True,
             encoder_init_method="kaiming",
-            # https://tenor.com/view/gun-tears-cat-point-gun-crying-cat-gif-17741904
             decoder_init_method="pseudoinverse",
-            # decoder_bias_init_method="zeros",
-            decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="zeros",
+            # decoder_bias_init_method="geom_median",
             reconstruction_loss_type="mse_batchnorm",
-            project_updates_from_dec=False,
+            project_updates_from_dec=None,
+            # project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             death_loss_type="ghost_grads",
             # death_loss_type="none",
             death_penalty_threshold=1e-5,
-            dead_after=5_000,
+            dead_after=1_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),

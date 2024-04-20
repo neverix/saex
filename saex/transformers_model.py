@@ -17,10 +17,12 @@ class TransformersModel(object):
             setattr(model_config, k, v)
         
         self.sharding = sharding
-        model = transformers.FlaxAutoModel.from_pretrained(
+        self._model = transformers.FlaxAutoModel.from_pretrained(
                 config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
-        model.params = jax.device_put(model.params, sharding)
-        self._model = jax.jit(model, static_argnames=("output_hidden_states"))
+        self._model.params = jax.device_put(self._model.params, sharding)
+        self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values
+        self._compute_activations = jax.jit(lambda *a, **k: self._model(*a, **k).hidden_states[self.config.layer],
+                              static_argnames=("output_hidden_states"))
         
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
@@ -46,10 +48,9 @@ class TransformersModel(object):
         if self.config.cache_n > 0 and self._cache[0] is not None:
             tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
         tokens = {k: jax.device_put(v, self.sharding) for k, v in tokens.items()}
-        outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
-        hidden_states = outputs.hidden_states[self.config.layer]
         if self.config.cache_n > 0 and self._cache[0] is None:
-            self._cache = outputs.past_key_values, hidden_states
+            self._cache = (self._compute_key_values(**tokens), None)
+        hidden_states = self._compute_activations(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
         # TODO but I don't think we should output cached hidden states; those never change
 
         mask = tokens["attention_mask"].reshape(-1)
