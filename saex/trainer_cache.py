@@ -245,8 +245,8 @@ def main():
     restore = False
     config = BufferTrainerConfig(
         n_dimensions=768,
-        lr=6e-4,
-        # lr=1e-3,
+        # lr=6e-4,
+        lr=1e-3,
         beta1=0.0,
         # beta1=0.99,
         beta2=0.999,
@@ -265,8 +265,9 @@ def main():
             # sparsity_loss_type="l1_sqrt",
             # sparsity_loss_type=("recip", 0.1),
             sparsity_loss_type="l1",
-            sparsity_coefficient=1e-4,
-            # sparsity_coefficient=8e-5,
+            # sparsity_coefficient=1e-4,
+            sparsity_coefficient=7.5e-5,
+            # sparsity_coefficient=5e-5,
             # sparsity_coefficient=3e-5,
             batch_size=batch_size,
             expansion_factor=32,
