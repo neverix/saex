@@ -273,7 +273,8 @@ class SAE(eqx.Module):
                                   updated.W_dec)
                 b_enc = jnp.where(dead, 0, updated.b_enc)
             updated = eqx.tree_at(lambda s: s.W_enc, updated, W_enc)
-            updated = eqx.tree_at(lambda s: s.b_enc, updated, b_enc)
+            if self.config.use_encoder_bias:
+                updated = eqx.tree_at(lambda s: s.b_enc, updated, b_enc)
             updated = eqx.tree_at(lambda s: s.W_dec, updated, W_dec)
             updated = eqx.tree_at(lambda s: s.s, updated, jnp.where(dead, 1, updated.s))
             
