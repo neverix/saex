@@ -222,6 +222,9 @@ class SAE(eqx.Module):
                       last_output: SAEOutput,
                       step: int,
                       key: jax.random.PRNGKey):
+        # assumes adam is the 0th gradient processor
+        get_adam = lambda s: s[0][0]
+        
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):
                 return W_dec_grad - jnp.einsum("h f, h -> h f",
@@ -237,14 +240,16 @@ class SAE(eqx.Module):
         updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
         
         # at the end of our first step, compute mean
-        def adjust_mean(b_dec):
+        def adjust_mean(b_dec, opt_state):
             if self.config.decoder_bias_init_method == "mean":
                 b_dec = b_dec + jnp.mean(last_input - last_output.output, axis=0)
             elif self.config.decoder_bias_init_method == "geom_median":
                 b_dec = b_dec + geometric_median(last_input - last_output.output)
-            return b_dec
-        updated = eqx.tree_at(lambda s: s.b_dec, updated,
-                              jax.lax.switch(jnp.astype(step == 1, jnp.int32), (adjust_mean, lambda x: x), updated.b_dec))
+            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))            
+            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).nu.b_dec))           
+            return b_dec, opt_state
+        updated_b_dec, opt_state = jax.lax.switch(jnp.astype(step == 1, jnp.int32), (lambda *a: a, adjust_mean), updated.b_dec, opt_state)
+        updated = eqx.tree_at(lambda s: s.b_dec, updated, updated_b_dec)
         
         def resample(updated, state, opt_state):
             dead = state.get(self.time_since_fired) > self.config.dead_after
@@ -273,8 +278,6 @@ class SAE(eqx.Module):
             updated = eqx.tree_at(lambda s: s.s, updated, jnp.where(dead, 1, updated.s))
             
             # reset momentum and variance
-            # assumes adam is the 0th gradient processor
-            get_adam = lambda s: s[0][0]
             adam = get_adam(opt_state)
     
             opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))

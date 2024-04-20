@@ -240,6 +240,7 @@ def main():
     cache_batch_size = 1024
     batch_size = 1024
     max_seq_len = 128
+    restore = False
     config = BufferTrainerConfig(
         n_dimensions=768,
         lr=6e-4,
@@ -253,8 +254,7 @@ def main():
         # save_steps=1_000,
         save_steps=None,
         use_wandb=("neverix", "saex"),
-        save_path=f"weights/gpt2-{layer}.safetensors",
-        # save_path=f"weights/gpt2s-{layer}-tuned.safetensors",
+        save_path=f"weights/gpt2-{layer}.safetensors" if not restore else f"weights/gpt2s-{layer}-tuned.safetensors",
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
@@ -268,14 +268,13 @@ def main():
             expansion_factor=32,
             use_encoder_bias=False,
             # use_encoder_bias=True,
-            remove_decoder_bias=True,
-            encoder_init_method="orthogonal",
+            remove_decoder_bias=restore,
+            encoder_init_method="kaiming",
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="zeros",
-            # decoder_bias_init_method="geom_median",
+            decoder_bias_init_method="geom_median" if not restore else "zeros",
             reconstruction_loss_type="mse_batchnorm",
-            project_updates_from_dec=None,
-            # project_updates_from_dec=True,
+            # project_updates_from_dec=False,
+            project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             # death_loss_type="ghost_grads",
             # death_loss_type="dm_ghost_grads",
@@ -287,8 +286,7 @@ def main():
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),
-        sae_restore=None,
-        # sae_restore=f"weights/jb-gpt2s-{layer}.safetensors",
+        sae_restore=None if not restore else f"weights/jb-gpt2s-{layer}.safetensors",
         cache_every_steps=int(cache_size / batch_size / 2),
         cache_batch_size=cache_batch_size,
         cache_acc=int(cache_size / cache_batch_size / max_seq_len),
