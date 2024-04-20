@@ -151,7 +151,7 @@ class BufferTrainer(object):
 
         @partial(jax.jit, donate_argnums=(1, 2, 3), static_argnums=(4, 5))
         def train_step(
-            batch, sae_params, sae_state, opt_state, sae_static, optimizer, step
+            batch, sae_params, sae_state, opt_state, sae_static, optimizer, step, key
         ):
             batch = jnp.nan_to_num(batch)
             sae_params, sae_state, opt_state = eqx.filter_shard(
@@ -163,8 +163,8 @@ class BufferTrainer(object):
             sae = eqx.combine(sae_params, sae_static)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
-                sae, sae_state = sae.apply_updates(updates, sae_state,
-                                        batch, sae_output, step)
+                sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
+                                                   batch, sae_output, step, key)
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae = eqx.combine(sae_params, sae_static)
             stats = sae.get_stats(sae_state, batch, sae_output)
@@ -208,9 +208,10 @@ class BufferTrainer(object):
                 
                 batch = eqx.filter_shard(batch, self.sharding)
                 
-                # TODO put update into 1 step
+                key, subkey = jax.random.split(key)
                 sae_params, self.sae_state, opt_state, stats = train_step(
-                    batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)
+                    batch, sae_params, self.sae_state, opt_state, sae_static, optimizer,
+                    iteration, subkey)
 
                 bar.set_postfix(stats)
                 
@@ -243,7 +244,8 @@ def main():
         n_dimensions=768,
         lr=6e-4,
         # lr=1e-3,
-        beta1=0.99,
+        beta1=0.0,
+        # beta1=0.99,
         beta2=0.999,
         scheduler_warmup=128,
         scheduler_cycle=None,
@@ -276,11 +278,12 @@ def main():
             # project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             # death_loss_type="ghost_grads",
-            death_loss_type="dm_ghost_grads",
-            # death_loss_type="none",
-            death_penalty_threshold=1e-5,
+            # death_loss_type="dm_ghost_grads",
+            death_loss_type="none",
+            death_penalty_threshold=1e-5 * 1,
             dead_after=1_000,
             # resample_every=2_000,
+            # resample_type="sample_inputs",
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),

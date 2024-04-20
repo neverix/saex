@@ -40,6 +40,7 @@ class SAEConfig:
     death_penalty_threshold: float = 1e-5
     death_penalty_coefficient: float = 1.0
     resample_every: int = 1e10
+    resample_type: Literal["boom", "sample_inputs"] = "boom"
     
     sparsity_tracking_epsilon: float = 0.05
 
@@ -216,9 +217,11 @@ class SAE(eqx.Module):
 
     def apply_updates(self, updates: PyTree[Float],
                       state: eqx.nn.State,
+                      opt_state,
                       last_input: Float[Array, "b f"],
                       last_output: SAEOutput,
-                      step: int):
+                      step: int,
+                      key: jax.random.PRNGKey):
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):
                 return W_dec_grad - jnp.einsum("h f, h -> h f",
@@ -243,20 +246,43 @@ class SAE(eqx.Module):
         updated = eqx.tree_at(lambda s: s.b_dec, updated,
                               jax.lax.switch(jnp.astype(step == 1, jnp.int32), (adjust_mean, lambda x: x), updated.b_dec))
         
-        def resample(W_dec, state):
+        def resample(updated, state, opt_state):
             dead = state.get(self.time_since_fired) > self.config.dead_after
-            W_dec = jnp.where(dead[:, None],
-                              jax.nn.initializers.orthogonal()(utils.get_key(), W_dec.shape),
-                              W_dec)
+            if self.config.resample_type == "boom":
+                W_enc = jnp.where(dead[None, :],
+                                jax.nn.initializers.orthogonal()(utils.get_key(), updated.W_enc.shape),
+                                updated.W_enc)
+                b_enc = jnp.where(dead, self.config.encoder_bias_init_mean, updated.b_enc)
+                W_dec = jnp.where(dead[:, None],
+                                W_enc.T,
+                                updated.W_dec)
+            elif self.config.resample_type == "sample_inputs":
+                # https://github.com/saprmarks/dictionary_learning/blob/main/training.py#L105
+                alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[:, None]), axis=-1).mean()
+                sampled_vecs = jax.random.choice(key, last_input, (len(W_enc),), replace=True, axis=0)
+                W_enc = jnp.where(dead[None, :],
+                                  (sampled_vecs * alive_norm * 0.2).T,
+                                  updated.W_enc)
+                W_dec = jnp.where(dead[:, None],
+                                  (W_enc / jnp.linalg.norm(sampled_vecs, axis=-1)[None, :]).T,
+                                  updated.W_dec)
+                b_enc = jnp.where(dead, 0, updated.b_enc)
+            updated = eqx.tree_at(lambda s: s.W_enc, updated, W_enc)
+            updated = eqx.tree_at(lambda s: s.b_enc, updated, b_enc)
+            updated = eqx.tree_at(lambda s: s.W_dec, updated, W_dec)
+
+            print(opt_state)
+            
             state = state.set(self.time_since_fired, jnp.where(dead, 0, state.get(self.time_since_fired)))
-            return W_dec, state
-        new_w_dec, state = jax.lax.switch(jnp.astype(step % self.config.resample_every == self.config.resample_every - 1,
+            return updated, state
+        updated_params, updated_static = eqx.partition(updated, eqx.is_array)
+        updated_params, state = jax.lax.switch(jnp.astype(step % self.config.resample_every == self.config.resample_every - 1,
                                                      jnp.int32),
-                                          (resample, lambda x, y: (x, y)),
-                                          updated.W_dec, state)
-        updated = eqx.tree_at(lambda s: s.W_dec, updated, new_w_dec)
+                                          (lambda *a: a, resample),
+                                          updated_params, state, opt_state)
+        updated = eqx.combine(updated_params, updated_static)
         
-        return updated, state
+        return updated, state, opt_state
     
     def normalize_w_dec(self, w_dec, eps=1e-6):
         if self.config.restrict_dec_norm == "exact":
