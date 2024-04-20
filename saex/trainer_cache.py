@@ -32,6 +32,7 @@ class BufferTrainerConfig:
     beta2: float
     scheduler_warmup: int
     scheduler_cycle: int
+    scheduler_multiply: float
 
     train_iterations: int
     save_steps: Optional[int]
@@ -135,7 +136,8 @@ class BufferTrainer(object):
             optax.scale_by_schedule(
                 optax.join_schedules(
                     [optax.linear_schedule(0, 1, self.config.scheduler_warmup)]
-                    + [optax.cosine_decay_schedule(1, scheduler_cycle) for _ in range(n_cycles)],
+                    + [optax.cosine_decay_schedule(1, scheduler_cycle, self.config.scheduler_multiply)
+                       for _ in range(n_cycles)],
                     boundaries=[self.config.scheduler_warmup + i * scheduler_cycle for i in range(n_cycles)]),
             ),
             optax.zero_nans(),
@@ -249,8 +251,9 @@ def main():
         # beta1=0.99,
         beta2=0.999,
         scheduler_warmup=128,
-        scheduler_cycle=None,
-        train_iterations=100_000,
+        scheduler_cycle=100_000,
+        scheduler_multiply=0.1,
+        train_iterations=20_000,
         # save_steps=1_000,
         save_steps=None,
         use_wandb=("neverix", "saex"),
@@ -259,15 +262,15 @@ def main():
         no_update=False,
         sae_config=SAEConfig(
             n_dimensions=768,
-            sparsity_loss_type="l1_sqrt",
+            # sparsity_loss_type="l1_sqrt",
             # sparsity_loss_type=("recip", 0.1),
-            # sparsity_loss_type="l1",
+            sparsity_loss_type="l1",
+            sparsity_coefficient=1e-4,
             # sparsity_coefficient=8e-5,
-            sparsity_coefficient=3e-5,
+            # sparsity_coefficient=3e-5,
             batch_size=batch_size,
             expansion_factor=32,
-            use_encoder_bias=False,
-            # use_encoder_bias=True,
+            use_encoder_bias=restore,
             remove_decoder_bias=restore,
             encoder_init_method="kaiming",
             decoder_init_method="pseudoinverse",

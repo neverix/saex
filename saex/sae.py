@@ -105,6 +105,19 @@ class SAE(eqx.Module):
         self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
 
+    def forward(self, activations: jax.Array):
+        activations = activations.astype(jnp.float32)
+        inputs = activations
+        if self.config.remove_decoder_bias:
+            inputs = inputs - self.b_dec
+        pre_relu = inputs @ self.W_enc
+        if self.config.use_encoder_bias:
+            pre_relu = pre_relu + self.b_enc
+        post_relu = jax.nn.relu(pre_relu)
+        hidden = post_relu * self.s
+        out = hidden @ self.W_dec + self.b_dec
+        return out
+
     def __call__(self, activations: jax.Array, state=None):
         activations = activations.astype(jnp.float32)
         inputs = activations
@@ -331,6 +344,10 @@ class SAE(eqx.Module):
         with safetensors.safe_open(weights_path, "flax") as f:
             self = eqx.tree_at(lambda s: s.W_enc, self, f.get_tensor("W_enc"))
             self = eqx.tree_at(lambda s: s.b_enc, self, f.get_tensor("b_enc"))
+            try:
+                self = eqx.tree_at(lambda s: s.s, self, f.get_tensor("scaling_factor"))
+            except safetensors.SafetensorError:
+                pass
             self = eqx.tree_at(lambda s: s.W_dec, self, f.get_tensor("W_dec"))
             self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec"))
         return self
