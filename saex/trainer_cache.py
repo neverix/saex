@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from functools import partial
 from typing import Optional, Tuple
+import json
 
 import equinox as eqx
 import jax
@@ -102,6 +103,19 @@ class BufferTrainer(object):
         if self.config.use_wandb:
             entity, project = self.config.use_wandb
             run = wandb.init(entity=entity, project=project)
+            
+            def save_config(config, prefix=""):
+                for k, v in config.items():
+                    if isinstance(v, dict):
+                        save_config(v, prefix + k + ".")
+                    elif is_dataclass(v):
+                        save_config(v.__dict__, prefix + k + ".")
+                    else:
+                        try:
+                            run.config[prefix + k] = json.dumps(v)
+                        except TypeError:
+                            pass
+            save_config(self.config.__dict__)
         
         dataset_iterator = iter(self.create_dataset())
         
@@ -149,7 +163,7 @@ class BufferTrainer(object):
             sae = eqx.combine(sae_params, sae_static)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
-                sae = sae.apply_updates(updates, sae_state,
+                sae, sae_state = sae.apply_updates(updates, sae_state,
                                         batch, sae_output, step)
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae = eqx.combine(sae_params, sae_static)
@@ -159,56 +173,59 @@ class BufferTrainer(object):
             return sae_params, sae_state, opt_state, stats
 
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
-        for iteration in bar:
-            if (iteration % self.config.cache_every_steps == 0
-                or iteration < self.config.dry_run_steps
-                or self.buffer is None):
-                for _ in range(self.config.cache_acc if self.buffer is not None else 1):
-                    # cache more activations
-                    texts = []
-                    for _ in range(self.config.cache_batch_size):
-                        texts.append(next(dataset_iterator))
-                    activations, model_misc = self.model(texts)
-                    if self.buffer is not None and iteration == 0:
-                        self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
-            
-            if iteration < self.config.dry_run_steps:
-                bar.set_description("Caching activations")
-                continue
-            bar.set_description("Training SAE")
+        try:
+            for iteration in bar:
+                if (iteration % self.config.cache_every_steps == 0
+                    or iteration < self.config.dry_run_steps
+                    or self.buffer is None):
+                    for _ in range(self.config.cache_acc if self.buffer is not None else 1):
+                        # cache more activations
+                        texts = []
+                        for _ in range(self.config.cache_batch_size):
+                            texts.append(next(dataset_iterator))
+                        activations, model_misc = self.model(texts)
+                        if self.buffer is not None and iteration == 0:
+                            self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
+                
+                if iteration < self.config.dry_run_steps:
+                    bar.set_description("Caching activations")
+                    continue
+                bar.set_description("Training SAE")
 
-            # train SAE
-            if self.buffer is None:
-                batch = activations
-            else:
-                key, subkey = jax.random.split(key, 2)
-                # self.buffer_state, batch = self.buffer.sample_batch(
-                #     self.buffer_state, self.config.sae_config.batch_size, subkey)
-                subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
-                subkeys = eqx.filter_shard(subkeys, self.sharding)
-                self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
-                                                    in_axes=(None, 0), out_axes=(None, 0))(
-                    self.buffer_state,
-                    subkeys)
-            
-            batch = eqx.filter_shard(batch, self.sharding)
-            
-            # TODO put update into 1 step
-            sae_params, self.sae_state, opt_state, stats = train_step(
-                batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)
+                # train SAE
+                if self.buffer is None:
+                    batch = activations
+                else:
+                    key, subkey = jax.random.split(key, 2)
+                    # self.buffer_state, batch = self.buffer.sample_batch(
+                    #     self.buffer_state, self.config.sae_config.batch_size, subkey)
+                    subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
+                    subkeys = eqx.filter_shard(subkeys, self.sharding)
+                    self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
+                                                        in_axes=(None, 0), out_axes=(None, 0))(
+                        self.buffer_state,
+                        subkeys)
+                
+                batch = eqx.filter_shard(batch, self.sharding)
+                
+                # TODO put update into 1 step
+                sae_params, self.sae_state, opt_state, stats = train_step(
+                    batch, sae_params, self.sae_state, opt_state, sae_static, optimizer, iteration)
 
-            bar.set_postfix(stats)
-            
-            if self.config.use_wandb:
-                run.log(stats)
-            
-            # TODO: track in wandb or other logger:
-            # - learning rate
-            # - norm ratio
-            
-            if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
-                self.sae = eqx.combine(sae_params, sae_static)
-                self.sae.save(self.config.save_path)
+                bar.set_postfix(stats)
+                
+                if self.config.use_wandb:
+                    run.log(stats)
+                
+                # TODO: track in wandb or other logger:
+                # - learning rate
+                # - norm ratio
+                
+                if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
+                    self.sae = eqx.combine(sae_params, sae_static)
+                    self.sae.save(self.config.save_path)
+        except KeyboardInterrupt:
+            print("Exiting early...")
         run.finish()
 
 
@@ -258,10 +275,12 @@ def main():
             project_updates_from_dec=None,
             # project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
-            death_loss_type="ghost_grads",
+            # death_loss_type="ghost_grads",
+            death_loss_type="dm_ghost_grads",
             # death_loss_type="none",
             death_penalty_threshold=1e-5,
             dead_after=1_000,
+            # resample_every=2_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.05,
         ),

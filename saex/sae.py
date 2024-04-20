@@ -39,6 +39,7 @@ class SAEConfig:
     dead_after: int = 50
     death_penalty_threshold: float = 1e-5
     death_penalty_coefficient: float = 1.0
+    resample_every: int = 1e10
     
     sparsity_tracking_epsilon: float = 0.05
 
@@ -195,7 +196,21 @@ class SAE(eqx.Module):
             
             return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
         elif self.config.death_loss_type == "dm_ghost_grads":
-            1/0
+            dead = state.get(self.time_since_fired) > self.config.dead_after
+            post_exp = jnp.exp(pre_relu) * self.s
+            ghost_recon = jnp.nan_to_num(post_exp @ self.W_dec)
+            
+            residual = jax.lax.stop_gradient(activations - reconstructions)
+            ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
+            diff_norm = jnp.linalg.norm(residual, axis=-1)
+            ghost_recon = ghost_recon * jnp.nan_to_num(jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None])
+            
+            # ghost_loss = self.reconstruction_loss(ghost_recon, residual)
+            ghost_loss = (ghost_recon - residual) ** 2
+            # recon_loss = self.reconstruction_loss(reconstructions, activations)
+            # ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
+            
+            return (ghost_loss).mean(-1) * jnp.mean(dead.astype(jnp.float32))
         else:
             raise ValueError(f"Unknown death loss type: \"{self.config.death_loss_type}\"")
 
@@ -228,7 +243,20 @@ class SAE(eqx.Module):
         updated = eqx.tree_at(lambda s: s.b_dec, updated,
                               jax.lax.switch(jnp.astype(step == 1, jnp.int32), (adjust_mean, lambda x: x), updated.b_dec))
         
-        return updated
+        def resample(W_dec, state):
+            dead = state.get(self.time_since_fired) > self.config.dead_after
+            W_dec = jnp.where(dead[:, None],
+                              jax.nn.initializers.orthogonal()(utils.get_key(), W_dec.shape),
+                              W_dec)
+            state = state.set(self.time_since_fired, jnp.where(dead, 0, state.get(self.time_since_fired)))
+            return W_dec, state
+        new_w_dec, state = jax.lax.switch(jnp.astype(step % self.config.resample_every == self.config.resample_every - 1,
+                                                     jnp.int32),
+                                          (resample, lambda x, y: (x, y)),
+                                          updated.W_dec, state)
+        updated = eqx.tree_at(lambda s: s.W_dec, updated, new_w_dec)
+        
+        return updated, state
     
     def normalize_w_dec(self, w_dec, eps=1e-6):
         if self.config.restrict_dec_norm == "exact":
@@ -247,6 +275,7 @@ class SAE(eqx.Module):
             loss=last_output.loss,
             loss_sparsity=last_output.losses["sparsity"].sum(-1).mean(),
             loss_reconstruction=last_output.losses["reconstruction"].mean(),
+            loss_death=jnp.mean(last_output.losses.get("death", 0)),
             # l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
             l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=(time_since_fired > self.config.dead_after).mean(),
