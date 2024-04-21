@@ -1,11 +1,62 @@
 import importlib
 import random
 from typing import TypeVar
+from unittest.mock import patch
+
+import inspect
+import ast
+import dis
 
 import equinox as eqx
 import jax
 
 T = TypeVar("T")
+
+
+class ModulePatcher(object):
+    def __init__(self, parent, module):
+        self._parent = parent
+        self._module = module
+        self._patches = []
+    
+    def in_module(self, module):
+        return self._parent.in_module(module)
+    
+    def patch(self, target, new):
+        full_name = f"{self._module}.{target}"
+        def patch_fn():
+            orig = get_obj_from_str(full_name)
+            source = inspect.getsource(orig)
+            obj_ast = ast.parse(source)
+            obj_ast = ast.fix_missing_locations(obj_ast)
+            code = compile(obj_ast, filename=orig.__code__.co_filename, mode="exec")
+            env = orig.__globals__.copy()
+            exec(code, env)
+            replacement = env[orig.__name__]
+            return replacement
+        
+        self._patches.append(patch(full_name, new_callable=patch_fn))
+        return self
+
+class Patcher(object):
+    def __init__(self):
+        self._module_patchers = []
+    
+    def in_module(self, module):
+        patcher = ModulePatcher(self, module)
+        self._module_patchers.append(patcher)
+        return patcher
+
+    def __enter__(self):
+        for module_patcher in self._module_patchers:
+            for patcher in module_patcher._patches:
+                patcher.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        for module_patcher in self._module_patchers:
+            for patcher in module_patcher._patches:
+                patcher.stop()
 
 
 def get_key():

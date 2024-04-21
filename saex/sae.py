@@ -226,10 +226,10 @@ class SAE(eqx.Module):
             diff_norm = jnp.linalg.norm(residual, axis=-1)
             ghost_recon = ghost_recon * jnp.nan_to_num(jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None])
             
-            # ghost_loss = self.reconstruction_loss(ghost_recon, residual)
+            ghost_loss = self.reconstruction_loss(ghost_recon, residual)
             ghost_loss = (ghost_recon - residual) ** 2
-            # recon_loss = self.reconstruction_loss(reconstructions, activations)
-            # ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
+            recon_loss = self.reconstruction_loss(reconstructions, activations)
+            ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
             return (ghost_loss).mean(-1) * jnp.mean(dead.astype(jnp.float32))
         else:
