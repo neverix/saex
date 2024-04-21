@@ -25,10 +25,13 @@ from .transformers_model import TransformersModelConfig
 @dataclass
 class BufferTrainerConfig:
     n_dimensions: int
+    
+    loss_batch_size: int
 
     use_wandb: Optional[Tuple[str, str]]
     log_every: int
     hist_every: int
+    eval_loss_every: int
 
     lr: float
     beta1: float
@@ -241,6 +244,13 @@ class BufferTrainer(object):
                     if iteration % self.config.hist_every == self.config.hist_every - 1:
                         # look at this graph
                         run.log({"histogram": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))}, step=iteration)
+                    if iteration % self.config.eval_loss_every == self.config.eval_loss_every - 1:
+                        texts = []
+                        for _ in range(self.config.loss_batch_size):
+                            texts.append(next(dataset_iterator))
+                        self.sae = eqx.combine(sae_params, sae_static)
+                        loss_clean, loss_reconstructed = self.model.eval_loss(texts, self.sae)
+                        run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed}, step=iteration)
                 
                 # TODO: track in wandb or other logger:
                 # - learning rate
@@ -264,12 +274,12 @@ def main():
     cache_batch_size = 1024
     batch_size = 1024
     max_seq_len = 128
-    restore = True
+    restore = False
     n_features = 768
     # n_features = 1600
     config = BufferTrainerConfig(
         n_dimensions=n_features,
-        lr=4e-4,
+        lr=6e-4,
         beta1=0.0,
         # beta1=0.99,
         beta2=0.999,
@@ -343,6 +353,8 @@ def main():
             dataset_name="Skylion007/openwebtext",
             # dataset_name="nev/lamini-dataset-text",
         ),
+        loss_batch_size=16,
+        eval_loss_every=512,
         buffer_dtype=jnp.float32,
         use_devices=n_devices
     )

@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 import jax
 import jax.numpy as jnp
 import transformers
+import equinox as eqx
+from .patching import Patcher
 
 
 class TransformersModel(object):
@@ -17,13 +19,12 @@ class TransformersModel(object):
             setattr(model_config, k, v)
         
         self.sharding = sharding
-        self._model = transformers.FlaxAutoModel.from_pretrained(
+        self._model = transformers.FlaxAutoModelForCausalLM.from_pretrained(
                 config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
         self._model.params = jax.device_put(self._model.params, sharding)
         self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values
         self._compute_activations = jax.jit(lambda *a, **k: self._model(*a, **k).hidden_states[self.config.layer],
                               static_argnames=("output_hidden_states"))
-        self._compute_loss = lambda *a, **k: self._model(*a, **k).loss
         
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
@@ -44,12 +45,38 @@ class TransformersModel(object):
 
     def eval_loss(self, texts, autoencoder):
         tokens = self.encode_texts(texts)
-        tokens["labels"] = tokens["input_ids"][:, 1:]
-        tokens["input_ids"] = tokens["input_ids"][:, :-1]
-        tokens["attention_mask"] = tokens["attention_mask"][:, :-1]
-        loss = self._compute_loss(**tokens)
-        # TODO: add loss with autoencoder
-        return (loss, loss)
+        loss = self.compute_loss(**tokens, past_key_values=self._cache[0])
+        assert isinstance(self._model, transformers.models.gpt2.modeling_flax_gpt2.FlaxGPT2LMHeadModel)
+        
+        callback = []
+        with Patcher().in_module("transformers.models.gpt2.modeling_flax_gpt2").patch(
+            "FlaxGPT2BlockCollection.__call__", replacements=[
+                ("hidden_states = layer_outputs[0]", "hidden_states = callback[0](layer_outputs[0])")
+            ], additional_context={"callback": callback}
+        ):
+            sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
+            def compute_loss(sae_params, **kwargs):
+                accumulator = []
+                def cb(x):
+                    accumulator.append(None)
+                    # accumulating residuals _after_ a specified layer
+                    if len(accumulator) == self.config.layer:
+                        autoencoder = eqx.combine(sae_static, sae_params)
+                        x = autoencoder.forward(x)
+                    return x
+                callback.append(cb)
+                return self.compute_loss(**kwargs)
+            
+            loss_reconstructed = jax.jit(compute_loss)(sae_params, **tokens, past_key_values=self._cache[0])
+        return (loss, loss_reconstructed)
+
+    def compute_loss(self, input_ids, attention_mask, past_key_values=None):
+        labels = input_ids[:, 1:]
+        input_ids = input_ids[:, :-1]
+        attention_mask = attention_mask[:, :-1]
+        logits = self._model(input_ids, attention_mask, past_key_values=past_key_values).logits
+        loss = jnp.sum(jax.nn.log_softmax(logits) * jax.nn.one_hot(labels, logits.shape[-1]), axis=-1)
+        return -loss.mean()
     
     def encode_texts(self, texts: List[str]):
         texts = [self.config.add_prefix + text for text in texts]
