@@ -37,6 +37,7 @@ class SAEConfig:
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
+    scale_ghost_by_death: bool = True
     dead_after: int = 50
     death_penalty_threshold: float = 1e-5
     death_penalty_coefficient: float = 1.0
@@ -215,7 +216,10 @@ class SAE(eqx.Module):
             recon_loss = self.reconstruction_loss(reconstructions, activations)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
-            return jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
+            loss = jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
+            if self.config.scale_ghost_by_death:
+                loss = loss * jnp.mean(dead.astype(jnp.float32))
+            return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
             dead = state.get(self.time_since_fired) > self.config.dead_after
             post_exp = jnp.exp(pre_relu) * self.s
