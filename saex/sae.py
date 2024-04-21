@@ -212,7 +212,9 @@ class SAE(eqx.Module):
             diff_norm = jnp.linalg.norm(residual, axis=-1)
             ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
             
+            # same thing
             ghost_loss = self.reconstruction_loss(ghost_recon, jax.lax.stop_gradient(residual))
+            # ghost_loss = jnp.square(ghost_recon - jax.lax.stop_gradient(residual))
             recon_loss = self.reconstruction_loss(reconstructions, activations)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
@@ -222,15 +224,21 @@ class SAE(eqx.Module):
             return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
             dead = state.get(self.time_since_fired) > self.config.dead_after
-            post_exp = jnp.exp(pre_relu) * self.s
-            ghost_recon = jnp.nan_to_num(post_exp @ self.W_dec)
+            # post_exp = jnp.exp(pre_relu) * self.s
+            # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu)) * self.s
+            post_exp = jax.nn.softplus(pre_relu) * self.s
+            post_exp = jnp.where(dead, post_exp, 0)
+            ghost_recon = post_exp @ self.W_dec
             
             residual = jax.lax.stop_gradient(activations - reconstructions)
-            ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
-            diff_norm = jnp.linalg.norm(residual, axis=-1)
-            ghost_recon = ghost_recon * jnp.nan_to_num(jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None])
+            ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1, keepdims=True)
+            diff_norm = jnp.linalg.norm(residual, axis=-1, keepdims=True)
+            ghost_recon = ghost_recon * (jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps)))
+            # ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm) / jax.lax.stop_gradient(ghost_norm * 2 + eps)
+            # ghost_recon = (ghost_recon / jax.lax.stop_gradient(ghost_norm * 2 + eps)) * jax.lax.stop_gradient(diff_norm)
+            # ghost_recon = ghost_recon * jnp.nan_to_num(jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps)), nan=1.0)
             
-            ghost_loss = self.reconstruction_loss(ghost_recon, residual)
+            # ghost_loss = self.reconstruction_loss(ghost_recon, residual)
             ghost_loss = (ghost_recon - residual) ** 2
             recon_loss = self.reconstruction_loss(reconstructions, activations)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
