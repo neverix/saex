@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import transformers
 from oryx.core import sow, plant
+import jax.sharding as jshard
 
 from .patching import Patcher
 
@@ -15,16 +16,15 @@ from .patching import Patcher
 class TransformersModel(object):
     # Extracts features from the residual stream
 
-    def __init__(self, config: "TransformersModelConfig", sharding=None):
+    def __init__(self, config: "TransformersModelConfig", mesh: jshard.Mesh):
         self.config = config
         model_config = transformers.AutoConfig.from_pretrained(config.model_name_or_path)
         for k, v in config.config_override.items():
             setattr(model_config, k, v)
         
-        self.sharding = sharding
         self._model = transformers.FlaxAutoModelForCausalLM.from_pretrained(
                 config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
-        self._model.params = jax.device_put(self._model.params, sharding)
+        self._model.params = jax.device_put_replicated(self._model.params, mesh.devices)
         self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values
         self._compute_activations = jax.jit(lambda *a, **k: self._model(*a, **k).hidden_states[self.config.layer],
                               static_argnames=("output_hidden_states"))

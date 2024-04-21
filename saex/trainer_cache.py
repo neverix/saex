@@ -8,6 +8,7 @@ import jax
 import jax.experimental.mesh_utils as mesh_utils
 import jax.numpy as jnp
 import jax.sharding as jshard
+from jax.sharding import PartitionSpec as P
 import jax_smi
 import numpy as np
 import optax
@@ -66,38 +67,36 @@ class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
 
-        try:
-            self.mesh = mesh_utils.create_device_mesh((self.config.use_devices, 1))
-            self.sharding = jshard.PositionalSharding(self.mesh)
-            self.sharding_dp = self.sharding.replicate(0)
-        except ValueError:
-            print("Warning: mesh size mismatch, falling back to single device")
-            device = jax.devices()[0]
-            self.sharding = device
-            self.sharding_dp = device
+        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(-1, 1), axis_names=("dp", "mp"))
         
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
             self.buffer = None
         else:
+            print("Creating buffer...")
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
                 config.buffer_max_samples, config.n_dimensions,
-                dtype=config.buffer_dtype)
-            self.buffer_state = eqx.filter_shard(self.buffer_state, self.sharding_dp)
+                dtype=config.buffer_dtype, mesh=self.mesh)
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
             print("Creating SAE...")
             self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config)
+            print(jax.tree_flatten(self.sae_state))
+            spec_sae, spec_state = self.sae.get_partition_spec()
             if config.sae_restore:
                 print(f"Loading checkpoint ({config.sae_restore})...")
                 self.sae = self.sae.restore(config.sae_restore)
-            self.sae = eqx.filter_shard(self.sae, self.sharding_dp)
-            self.sae_state = eqx.filter_shard(self.sae_state, self.sharding_dp)
+            self.sharding_sae = jax.tree_util.tree_map(
+                lambda x: (jshard.NamedSharding(self.mesh, x) if isinstance(x, P) else None),
+                spec_sae)
+            self.sae = eqx.filter_shard(self.sae, self.sharding_sae)
+            self.sharding_sae_state = jshard.NamedSharding(self.mesh, spec_state)
+            self.sae_state = eqx.filter_shard(self.sae_state, self.sharding_sae_state)
         
         if model is None:
             print("Loading model...")
-            model = config.model_config.model_class(config.model_config, sharding=self.sharding_dp)
+            model = config.model_config.model_class(config.model_config, mesh=self.mesh)
         self.model = model
         
         if create_dataset is None:
@@ -163,22 +162,24 @@ class BufferTrainer(object):
             batch, sae_params, sae_state, opt_state, sae_static, optimizer, step, key
         ):
             batch = jnp.nan_to_num(batch)
-            sae_params, sae_state, opt_state = eqx.filter_shard(
-                (sae_params, sae_state, opt_state), self.sharding_dp)
+            sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
+            sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
+            opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             
-            batch = eqx.filter_shard(batch, self.sharding)
+            batch = jax.lax.with_sharding_constraint(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
             (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
-            sae_params = eqx.filter_shard(sae_params, self.sharding_dp)
+            sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             sae = eqx.combine(sae_params, sae_static)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
                                                    batch, sae_output, step, key)
                 sae_params, _ = eqx.partition(sae, is_trainable)
-            sae = eqx.combine(sae_params, sae_static)
-            stats = sae.get_stats(sae_state, batch, sae_output)
-            sae_params, sae_state, opt_state = eqx.filter_shard(
-                (sae_params, sae_state, opt_state), self.sharding_dp)
+            sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
+            sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
+            opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             return sae_params, sae_state, opt_state, stats
 
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
@@ -223,13 +224,13 @@ class BufferTrainer(object):
                     # self.buffer_state, batch = self.buffer.sample_batch(
                     #     self.buffer_state, self.config.sae_config.batch_size, subkey)
                     subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
-                    subkeys = eqx.filter_shard(subkeys, self.sharding)
+                    subkeys = eqx.filter_shard(subkeys.reshape(self.mesh.shape[0], -1),
+                                               jshard.NamedSharding(self.mesh, P("dp", None)))
                     self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
-                                                        in_axes=(None, 0), out_axes=(None, 0))(
-                        self.buffer_state,
-                        subkeys)
+                                                        in_axes=(None, 1), out_axes=(None, 0))(
+                                                            self.buffer_state, subkeys)
                 
-                batch = eqx.filter_shard(batch, self.sharding)
+                batch = eqx.filter_shard(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
                 
                 key, subkey = jax.random.split(key)
                 sae_params, self.sae_state, opt_state, stats = train_step(
@@ -271,7 +272,7 @@ class BufferTrainer(object):
 
 
 def main():
-    # jax_smi.initialise_tracking()
+    jax_smi.initialise_tracking()
  
     n_devices = len(jax.devices())
     # n_devices = 1

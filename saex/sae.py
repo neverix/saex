@@ -10,6 +10,7 @@ import safetensors
 from jax.experimental.checkify import checkify
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
+from jax.sharding import PartitionSpec as P
 
 from . import utils
 from .geometric_median import geometric_median
@@ -45,6 +46,8 @@ class SAEConfig:
     resample_type: Literal["boom", "sample_inputs"] = "sample_inputs"
     
     sparsity_tracking_epsilon: float = 0.05
+    
+    use_model_parallel: bool = True
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -106,6 +109,7 @@ class SAE(eqx.Module):
         self.num_steps = eqx.nn.StateIndex(jnp.array(0))
         self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
+    
 
     def forward(self, activations: jax.Array):
         activations = activations.astype(jnp.float32)
@@ -362,6 +366,36 @@ class SAE(eqx.Module):
     
     def get_log_sparsity(self, state: eqx.nn.State):
         return np.log10(1e-8 + state.get(self.avg_l0))
+    
+    def get_partition_spec(self):
+        if not self.config.use_model_parallel:
+            spec, state_spec = {
+                "W_enc": P(None, None),
+                "b_enc": P(None),
+                "s": P(None),
+                "W_dec": P(None, None),
+                "b_dec": P(None),
+            }, {
+                self.time_since_fired: P(None),
+                self.num_steps: P(),
+                self.avg_loss_sparsity: P(None),
+                self.avg_l0: P(None),
+            }
+        else:
+            spec, state_spec = {
+                "W_enc": P(None, "mp"),
+                "b_enc": P("mp"),
+                "s": P("mp"),
+                "W_dec": P("mp", None),
+                "b_dec": P(None),
+            }, {
+                self.time_since_fired: P("mp"),
+                self.num_steps: P(),
+                self.avg_loss_sparsity: P("mp"),
+                self.avg_l0: P("mp"),
+            }
+        spec = jax.tree_util.tree_map_with_path(lambda path, x: spec.get(path[0].name), self)
+        return spec, state_spec
 
     def restore(self, weights_path: os.PathLike):
         with safetensors.safe_open(weights_path, "flax") as f:
