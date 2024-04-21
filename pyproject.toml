@@ -24,6 +24,7 @@ safetensors = "^0.4.3"
 tokenizers = "^0.19.1"
 torch = {version = "^2.2.2+cpu", source = "torch-cpu"}
 jax-smi = "^1.0.3"
+oryx = "^0.2.6"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1"

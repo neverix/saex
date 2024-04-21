@@ -1,6 +1,6 @@
 from functools import partial
-from typing import Any, Optional
 
+from safetensors.flax import save_file
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -46,3 +46,7 @@ class ActivationBuffer(eqx.Module):
         cache, n_valid = state.get(self._cache), state.get(self._n_valid)
         index = jax.random.randint(key, (1,), 0, n_valid)[0]
         return state, cache[index]
+
+    def save(self, state, save_path):
+        assert state.get(self._n_valid) == self.max_samples
+        save_file({"cache": state.get(self._cache), "n_valid": state.get(self._n_valid)}, save_path)

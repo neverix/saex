@@ -57,6 +57,7 @@ class BufferTrainerConfig:
     
     buffer_max_samples: int
     buffer_dtype: jnp.dtype
+    save_buffer: Optional[str]
     
     use_devices: int
 
@@ -250,7 +251,8 @@ class BufferTrainer(object):
                             texts.append(next(dataset_iterator))
                         self.sae = eqx.combine(sae_params, sae_static)
                         loss_clean, loss_reconstructed = self.model.eval_loss(texts, self.sae)
-                        run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed}, step=iteration)
+                        run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed,
+                                 "recon_loss_diff": loss_reconstructed - loss_clean}, step=iteration)
                 
                 # TODO: track in wandb or other logger:
                 # - learning rate
@@ -261,6 +263,10 @@ class BufferTrainer(object):
                     self.sae.save(self.config.save_path)
         except KeyboardInterrupt:
             print("Exiting early...")
+            if self.config.save_buffer:
+                save_buffer = input("Save buffer? (y/N)")
+                if save_buffer.lower() in ("y", "yes"):
+                    self.buffer.save(self.buffer_state, self.config.save_buffer)
         run.finish()
 
 
@@ -279,9 +285,11 @@ def main():
     # n_features = 1600
     config = BufferTrainerConfig(
         n_dimensions=n_features,
-        lr=6e-4,
+        lr=4e-4,
+        # lr=6e-5,
         beta1=0.0,
         # beta1=0.99,
+        # beta2=0.99,
         beta2=0.999,
         scheduler_warmup=128,
         scheduler_cycle=100_000,
@@ -302,7 +310,7 @@ def main():
             # sparsity_loss_type="hoyer",
             sparsity_loss_type="l1",
             # sparsity_coefficient=2e-4,
-            sparsity_coefficient=1e-4,
+            sparsity_coefficient=1.6e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=3e-5,
@@ -356,6 +364,7 @@ def main():
         loss_batch_size=16,
         eval_loss_every=512,
         buffer_dtype=jnp.float32,
+        save_buffer="weights/buffer.safetensors",
         use_devices=n_devices
     )
     trainer = BufferTrainer(config)
