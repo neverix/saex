@@ -8,21 +8,28 @@ import jax
 T = TypeVar("T")
 
 
-def get_random_numer():
+class RandomNumberGenerator(object):
+    def generate(self):
+        return get_random_number()
+
+def get_random_number():
     return 5
 
 def get_key():
     return jax.random.PRNGKey(random.randint(0, 2**32 - 1))
 
 
-def get_obj_from_str(string, reload=False, invalidate_cache=True):
-    module, cls = string.rsplit(".", 1)
+def get_obj_from_str(module, cls, reload=False, invalidate_cache=True):
     if invalidate_cache:
         importlib.invalidate_caches()
     if reload:
         module_imp = importlib.import_module(module)
         importlib.reload(module_imp)
-    return getattr(importlib.import_module(module, package=None), cls)
+    module = importlib.import_module(module, package=None)
+    obj = module
+    for c in cls.split("."):
+        obj = getattr(obj, c)
+    return module, obj
 
 
 # copied from https://github.com/patrick-kidger/equinox/blob/main/equinox/nn/_stateful.py

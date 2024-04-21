@@ -17,12 +17,13 @@ class Patcher(object):
         self._module = module
         return self
 
-    def patch(self, target, replacements=[]):
+    def patch(self, target, replacements=[], additional_context={}):
         if self._module is None:
             raise ValueError("Must specify module before patching: Patcher().in_module(\"module\")")
-        full_name = f"{self._module}.{target}"
+        module_name = self._module
+        full_name = f"{module_name}.{target}"
         def patch_fn():
-            orig = get_obj_from_str(full_name)
+            module, orig = get_obj_from_str(module_name, target)
             
             own_stacks = 0
             for callerframerecord in inspect.stack():
@@ -39,7 +40,7 @@ class Patcher(object):
             indent = len(source[0]) - len(source[0].lstrip())
             source = "".join([line[indent:] for line in source])
             
-            filename = orig.__code__.co_filename
+            filename = inspect.getsourcefile(orig)
             
             orig_ast = ast.parse(source)
             obj_ast = orig_ast
@@ -47,9 +48,12 @@ class Patcher(object):
                 obj_ast = NodeReplacer(
                     ast.parse(source_line).body[0], ast.parse(target_line).body[0],
                     offset - 1, indent, filename, self._patcher_traces, kwargs).visit(obj_ast)
+            obj_ast.body[0].end_lineno = (obj_ast.body[0].end_lineno - obj_ast.body[0].lineno) + offset + 1
+            obj_ast.body[0].lineno = offset + 1
             obj_ast = ast.fix_missing_locations(obj_ast)
             code = compile(obj_ast, filename=filename, mode="exec")
-            env = orig.__globals__.copy()
+            # env = {**orig.__globals__, **additional_context}
+            env = {**module.__dict__, **additional_context}
             exec(code, env)
             replacement = env[orig.__name__]
             return replacement

@@ -264,12 +264,12 @@ def main():
     cache_batch_size = 1024
     batch_size = 1024
     max_seq_len = 128
-    restore = False
+    restore = True
     n_features = 768
     # n_features = 1600
     config = BufferTrainerConfig(
         n_dimensions=n_features,
-        lr=6e-4,
+        lr=4e-4,
         beta1=0.0,
         # beta1=0.99,
         beta2=0.999,
@@ -291,8 +291,8 @@ def main():
             # sparsity_loss_type=("recip", 0.2),
             # sparsity_loss_type="hoyer",
             sparsity_loss_type="l1",
-            sparsity_coefficient=2e-4,
-            # sparsity_coefficient=1e-4,
+            # sparsity_coefficient=2e-4,
+            sparsity_coefficient=1e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=3e-5,

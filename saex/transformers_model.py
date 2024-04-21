@@ -23,6 +23,7 @@ class TransformersModel(object):
         self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values
         self._compute_activations = jax.jit(lambda *a, **k: self._model(*a, **k).hidden_states[self.config.layer],
                               static_argnames=("output_hidden_states"))
+        self._compute_loss = lambda *a, **k: self._model(*a, **k).loss
         
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(config.model_name_or_path, use_fast=True)
         if self._tokenizer.pad_token is None:
@@ -30,6 +31,27 @@ class TransformersModel(object):
         self._cache = (None, None)
 
     def __call__(self, texts: List[str]):
+        tokens = self.encode_texts(texts)
+        if self.config.cache_n > 0 and self._cache[0] is None:
+            self._cache = (self._compute_key_values(**tokens), None)
+        hidden_states = self._compute_activations(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
+        # TODO but I don't think we should output cached hidden states; those never change
+
+        mask = tokens["attention_mask"].reshape(-1)
+        if not self.config.return_real_mask:
+            mask = jnp.ones_like(mask, dtype=jnp.bool)
+        return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
+
+    def eval_loss(self, texts, autoencoder):
+        tokens = self.encode_texts(texts)
+        tokens["labels"] = tokens["input_ids"][:, 1:]
+        tokens["input_ids"] = tokens["input_ids"][:, :-1]
+        tokens["attention_mask"] = tokens["attention_mask"][:, :-1]
+        loss = self._compute_loss(**tokens)
+        # TODO: add loss with autoencoder
+        return (loss, loss)
+    
+    def encode_texts(self, texts: List[str]):
         texts = [self.config.add_prefix + text for text in texts]
         if self.config.concat_all:
             text = "".join(texts)
@@ -48,20 +70,7 @@ class TransformersModel(object):
         if self.config.cache_n > 0 and self._cache[0] is not None:
             tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
         tokens = {k: jax.device_put(v, self.sharding) for k, v in tokens.items()}
-        if self.config.cache_n > 0 and self._cache[0] is None:
-            self._cache = (self._compute_key_values(**tokens), None)
-        hidden_states = self._compute_activations(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
-        # TODO but I don't think we should output cached hidden states; those never change
-
-        mask = tokens["attention_mask"].reshape(-1)
-        if not self.config.return_real_mask:
-            mask = jnp.ones_like(mask, dtype=jnp.bool)
-        return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
-
-    # def eval_loss(self, texts, autoencoder):
-    #     tokens = self._tokenizer(texts, return_tensors="jax", padding="max_length", truncation=True,
-    #                              max_length=self._model.config.n_positions)
-    #     outputs = self._model(**tokens, output_hidden_states=True, past_key_values=self._cache[0])
+        return tokens
 
 
 @dataclass
