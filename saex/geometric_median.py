@@ -1,6 +1,4 @@
 # cribbed from https://github.com/jbloomAus/SAELens/blob/main/sae_lens/training/geometric_median.py
-import warnings
-
 import jax.numpy as jnp
 import jax
 

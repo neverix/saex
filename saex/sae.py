@@ -5,6 +5,7 @@ from typing import Dict, Literal, NamedTuple, Tuple, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import safetensors
 from jax.experimental.checkify import checkify
 from jaxtyping import Array, Float, PyTree
@@ -346,6 +347,9 @@ class SAE(eqx.Module):
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
         )
+    
+    def get_log_sparsity(self, state: eqx.nn.State):
+        return np.log10(1e-8 + state.get(self.avg_l0))
 
     def restore(self, weights_path: os.PathLike):
         with safetensors.safe_open(weights_path, "flax") as f:

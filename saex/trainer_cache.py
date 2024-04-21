@@ -26,6 +26,7 @@ class BufferTrainerConfig:
     n_dimensions: int
 
     use_wandb: Optional[Tuple[str, str]]
+    log_every: int
     hist_every: int
 
     lr: float
@@ -219,10 +220,11 @@ class BufferTrainer(object):
                 bar.set_postfix(stats)
                 
                 if self.config.use_wandb:
-                    run.log(stats)
+                    if iteration % self.config.log_every == 0:
+                        run.log(stats)
                     if iteration % self.config.hist_every == self.config.hist_every - 1:
                         # look at this graph
-                        run.log({"histogram": wandb.Histogram(np.log(self.sae_state.get(self.sae.avg_l0)))})
+                        run.log({"histogram": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))})
                 
                 # TODO: track in wandb or other logger:
                 # - learning rate
@@ -241,14 +243,14 @@ def main():
  
     n_devices = len(jax.devices())
     # n_devices = 1
-    layer = 20
+    layer = 9
     cache_size = 2**19
     cache_batch_size = 1024
     batch_size = 1024
     max_seq_len = 128
     restore = False
-    # n_features = 768
-    n_features = 1600
+    n_features = 768
+    # n_features = 1600
     config = BufferTrainerConfig(
         n_dimensions=n_features,
         lr=6e-4,
@@ -262,6 +264,7 @@ def main():
         # save_steps=1_000,
         save_steps=None,
         use_wandb=("neverix", "saex"),
+        log_every=10,
         hist_every=100,
         save_path=f"weights/gpt2-{layer}.safetensors" if not restore else f"weights/gpt2s-{layer}-tuned.safetensors",
         dry_run_steps=0,
@@ -283,14 +286,15 @@ def main():
             remove_decoder_bias=restore,
             encoder_init_method="kaiming",
             decoder_init_method="pseudoinverse",
-            decoder_bias_init_method="geom_median" if not restore else "zeros",
+            decoder_bias_init_method="zeros",
+            # decoder_bias_init_method="geom_median" if not restore else "zeros",
             reconstruction_loss_type="mse_batchnorm",
             # project_updates_from_dec=False,
             project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             # death_loss_type="ghost_grads",
-            death_loss_type="dm_ghost_grads",
-            # death_loss_type="none",
+            # death_loss_type="dm_ghost_grads",
+            death_loss_type="none",
             death_penalty_threshold=1e-5,
             death_penalty_coefficient=1,
             dead_after=1000,
@@ -306,8 +310,8 @@ def main():
         buffer_max_samples=cache_size,
         # buffer_max_samples=0,
         model_config=TransformersModelConfig(
-            model_name_or_path="openai-community/gpt2-xl",
-            # model_name_or_path="gpt2",
+            # model_name_or_path="openai-community/gpt2-xl",
+            model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
             layer=layer,
