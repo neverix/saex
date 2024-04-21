@@ -20,7 +20,7 @@ class SAEConfig:
     sparsity_coefficient: float
     batch_size: int    
 
-    expansion_factor: int = 32
+    expansion_factor: int = 80  # 32
     
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False

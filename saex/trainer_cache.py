@@ -26,6 +26,7 @@ class BufferTrainerConfig:
     n_dimensions: int
 
     use_wandb: Optional[Tuple[str, str]]
+    hist_every: int
 
     lr: float
     beta1: float
@@ -219,6 +220,9 @@ class BufferTrainer(object):
                 
                 if self.config.use_wandb:
                     run.log(stats)
+                    if iteration % self.config.hist_every == self.config.hist_every - 1:
+                        # look at this graph
+                        run.log({"histogram": wandb.Histogram(np.log(self.sae_state.get(self.sae.avg_l0)))})
                 
                 # TODO: track in wandb or other logger:
                 # - learning rate
@@ -258,6 +262,7 @@ def main():
         # save_steps=1_000,
         save_steps=None,
         use_wandb=("neverix", "saex"),
+        hist_every=100,
         save_path=f"weights/gpt2-{layer}.safetensors" if not restore else f"weights/gpt2s-{layer}-tuned.safetensors",
         dry_run_steps=0,
         no_update=False,
@@ -267,9 +272,9 @@ def main():
             # sparsity_loss_type=("recip", 0.2),
             # sparsity_loss_type="hoyer",
             sparsity_loss_type="l1",
-            # sparsity_coefficient=1e-4,
+            sparsity_coefficient=1e-4,
             # sparsity_coefficient=7.5e-5,
-            sparsity_coefficient=1e-5,
+            # sparsity_coefficient=1e-5,
             # sparsity_coefficient=3e-5,
             # sparsity_coefficient=2e-3,
             batch_size=batch_size,
@@ -284,10 +289,10 @@ def main():
             project_updates_from_dec=True,
             # death_loss_type="sparsity_threshold",
             # death_loss_type="ghost_grads",
-            # death_loss_type="dm_ghost_grads",
-            death_loss_type="none",
+            death_loss_type="dm_ghost_grads",
+            # death_loss_type="none",
             death_penalty_threshold=1e-5,
-            death_penalty_coefficient=1e-3,
+            death_penalty_coefficient=1,
             dead_after=1000,
             # resample_every=200,
             # resample_type="sample_inputs",
