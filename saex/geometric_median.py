@@ -1,6 +1,6 @@
 # cribbed from https://github.com/jbloomAus/SAELens/blob/main/sae_lens/training/geometric_median.py
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 
 
 def weighted_average(points, weights):

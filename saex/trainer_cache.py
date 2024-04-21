@@ -1,7 +1,7 @@
+import json
 from dataclasses import dataclass, is_dataclass
 from functools import partial
 from typing import Optional, Tuple
-import json
 
 import equinox as eqx
 import jax
@@ -11,8 +11,9 @@ import jax.sharding as jshard
 import jax_smi
 import numpy as np
 import optax
-import wandb
 from tqdm.auto import trange
+
+import wandb
 
 from . import utils
 from .buffer import ActivationBuffer

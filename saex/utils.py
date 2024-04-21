@@ -5,7 +5,6 @@ from typing import TypeVar
 import equinox as eqx
 import jax
 
-
 T = TypeVar("T")
 
 

@@ -1,11 +1,11 @@
-from .utils import get_obj_from_str
-from unittest.mock import patch
-from copy import copy
-
-import inspect
 import ast
-
+import inspect
 import sys
+from copy import copy
+from unittest.mock import patch
+
+from .utils import get_obj_from_str
+
 
 class Patcher(object):
     def __init__(self):
