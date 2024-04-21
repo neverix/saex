@@ -25,21 +25,17 @@ class ActivationBuffer(eqx.Module):
         self._index = eqx.nn.StateIndex(jax.device_put(jnp.array(0)))
 
     @partial(eqx.filter_jit, donate="all-except-first")
-    def __call__(self, activations, state, mask=None):
+    def __call__(self, activations, state):
         cache, n_valid, index = state.get(self._cache), state.get(self._n_valid), state.get(self._index)
-        if mask is None:
-            mask = jnp.ones(len(activations), dtype=jnp.bool)
-        offsets = jnp.cumsum(mask.astype(jnp.int32)) - 1
-        new_n_valid = jnp.minimum(n_valid + offsets[-1], self.max_samples)
+        offsets = jnp.arange(activations.shape[0])
+        new_n_valid = jnp.minimum(n_valid + activations.shape[0], self.max_samples)
         # if n_valid == max_samples, we want to overwrite the oldest samples
         indices = (index + offsets) % self.max_samples
-        new_index = (index + offsets[-1]) % self.max_samples
+        new_index = (index + activations.shape[0]) % self.max_samples
         return (state
                 .set(self._cache,
                      cache
-                     # TODO properly order indices so one .set() does the job
-                     .at[indices].set(0)
-                     .at[indices].add(activations.astype(cache.dtype) * mask[:, None]))
+                     .at[indices].set(activations.astype(cache.dtype)))
                 .set(self._n_valid, new_n_valid)
                 .set(self._index, new_index))
 

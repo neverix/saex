@@ -34,3 +34,18 @@ poetry install
 poetry shell
 ```
 I think it should be possible to set up a development environment without installing pyenv on tpu-ubuntu2204. 
+
+# FAQ
+No one actually asked these questions, but here are the answers anyway.
+
+> How is this code parallelized?
+
+Currently, we only use data parallel - splitting activation buffers and batches across devices and replicating the rest. In the future, I hope we can train giant SAEs multi-node with tensor parallel.
+
+> Why was this code written this way?
+
+Dependency inversion.
+
+> What, how?
+
+Dependency inversion.

@@ -177,19 +177,33 @@ class BufferTrainer(object):
             return sae_params, sae_state, opt_state, stats
 
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
+        tokens_processed = 0
         try:
             for iteration in bar:
                 if (iteration % self.config.cache_every_steps == 0
                     or iteration < self.config.dry_run_steps
                     or self.buffer is None):
-                    for _ in range(self.config.cache_acc if self.buffer is not None else 1):
+                    mid_buffer = jnp.empty((
+                        self.config.cache_acc * self.config.cache_batch_size * self.config.model_config.max_seq_len,
+                        self.config.n_dimensions), dtype=self.config.buffer_dtype)
+                    accumulated = 0
+                    while accumulated < mid_buffer.shape[0]:
                         # cache more activations
                         texts = []
                         for _ in range(self.config.cache_batch_size):
                             texts.append(next(dataset_iterator))
                         activations, model_misc = self.model(texts)
-                        if self.buffer is not None and iteration == 0:
-                            self.buffer_state = self.buffer(activations, self.buffer_state, mask=model_misc.get("mask"))
+                        mask = model_misc.get("mask")
+                        if mask is not None:
+                            n_tokens = mask.sum()
+                            raw_tokens = activations.reshape(-1, activations.shape[-1])[mask.flatten()]
+                            mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(raw_tokens)  # ..
+                            accumulated += n_tokens
+                        else:
+                            n_tokens = np.prod(activations.shape[:-1])
+                        tokens_processed += n_tokens
+                    if self.buffer is not None:
+                        self.buffer_state = self.buffer(mid_buffer, self.buffer_state)
                 
                 if iteration < self.config.dry_run_steps:
                     bar.set_description("Caching activations")
@@ -198,7 +212,7 @@ class BufferTrainer(object):
 
                 # train SAE
                 if self.buffer is None:
-                    batch = activations
+                    batch = mid_buffer
                 else:
                     key, subkey = jax.random.split(key, 2)
                     # self.buffer_state, batch = self.buffer.sample_batch(
@@ -216,15 +230,16 @@ class BufferTrainer(object):
                 sae_params, self.sae_state, opt_state, stats = train_step(
                     batch, sae_params, self.sae_state, opt_state, sae_static, optimizer,
                     iteration, subkey)
+                stats["tokens_processed"] = tokens_processed
 
                 bar.set_postfix(stats)
                 
                 if self.config.use_wandb:
                     if iteration % self.config.log_every == 0:
-                        run.log(stats)
+                        run.log(stats, step=iteration)
                     if iteration % self.config.hist_every == self.config.hist_every - 1:
                         # look at this graph
-                        run.log({"histogram": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))})
+                        run.log({"histogram": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))}, step=iteration)
                 
                 # TODO: track in wandb or other logger:
                 # - learning rate
