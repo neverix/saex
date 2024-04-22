@@ -6,10 +6,10 @@ from typing import Any, Dict, List
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.sharding as jshard
 import numpy as np
 import transformers
-from oryx.core import sow, plant
-import jax.sharding as jshard
+from oryx.core import plant, sow
 
 from .patching import Patcher
 

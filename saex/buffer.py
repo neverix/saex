@@ -1,13 +1,14 @@
 from functools import partial
+from typing import List
 
-from safetensors.flax import save_file
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 import jax.sharding as jshard
+import numpy as np
 from jax.sharding import PartitionSpec as P
-from typing import List
+from safetensors import safe_open
+from safetensors.flax import save_file
 
 
 class ActivationBuffer(eqx.Module):
@@ -63,7 +64,17 @@ class ActivationBuffer(eqx.Module):
 
     def save(self, state, save_path):
         assert state.get(self._n_valid) == self.max_samples
-        save_file({"cache": state.get(self._cache), "n_valid": state.get(self._n_valid)}, save_path)
+        cache = state.get(self._cache)
+        save_file({"cache": cache.reshape(-1, cache.shape[-1]), "n_valid": state.get(self._n_valid)}, save_path)
+
+    def restore(self, state, restore_path):
+        with safe_open(restore_path, framework="flax") as f:
+            state = state.set(self._cache, jax.device_put(f.get_tensor("cache")
+                                                          .reshape(state.get(self._cache).shape),
+                                                          self.cache_sharding))
+            state = state.set(self._n_valid, f.get_tensor("n_valid"))
+            state = state.set(self._index, jnp.array(0))
+        return state
 
 
 # https://github.com/google/jax/issues/8487#issuecomment-963693106

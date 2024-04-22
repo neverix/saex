@@ -8,10 +8,10 @@ import jax
 import jax.experimental.mesh_utils as mesh_utils
 import jax.numpy as jnp
 import jax.sharding as jshard
-from jax.sharding import PartitionSpec as P
 import jax_smi
 import numpy as np
 import optax
+from jax.sharding import PartitionSpec as P
 from tqdm.auto import trange
 
 import wandb
@@ -59,6 +59,7 @@ class BufferTrainerConfig:
     buffer_max_samples: int
     buffer_dtype: jnp.dtype
     save_buffer: Optional[str]
+    restore_buffer: Optional[str]
     
     use_devices: int
 
@@ -77,6 +78,10 @@ class BufferTrainer(object):
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
                 config.buffer_max_samples, config.n_dimensions,
                 dtype=config.buffer_dtype, mesh=self.mesh)
+            if config.restore_buffer:
+                print("Loading buffer...")
+                self.buffer_state = self.buffer.restore(
+                    self.buffer_state, config.restore_buffer)
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
@@ -186,7 +191,7 @@ class BufferTrainer(object):
             for iteration in bar:
                 if (iteration % self.config.cache_every_steps == 0
                     or iteration < self.config.dry_run_steps
-                    or self.buffer is None):
+                    or self.buffer is None) and self.config.cache_acc > 0:
                     mid_buffer = jnp.empty((
                         self.config.cache_acc * self.config.cache_batch_size * self.config.model_config.max_seq_len,
                         self.config.n_dimensions), dtype=self.config.buffer_dtype)
@@ -283,6 +288,7 @@ def main():
     restore = False
     n_features = 768
     # n_features = 1600
+    buffer_restore = "weights/buffer.safetensors"
     config = BufferTrainerConfig(
         n_dimensions=n_features,
         lr=4e-4,
@@ -341,7 +347,7 @@ def main():
         sae_restore=None if not restore else f"weights/jb-gpt2s-{layer}.safetensors",
         cache_every_steps=int(cache_size / batch_size / 2),
         cache_batch_size=cache_batch_size,
-        cache_acc=int(cache_size / cache_batch_size / max_seq_len),
+        cache_acc=int(cache_size / cache_batch_size / max_seq_len) if not buffer_restore else 0,
         buffer_max_samples=cache_size,
         # buffer_max_samples=0,
         model_config=TransformersModelConfig(
@@ -365,6 +371,7 @@ def main():
         eval_loss_every=512,
         buffer_dtype=jnp.float32,
         save_buffer="weights/buffer.safetensors",
+        restore_buffer=buffer_restore,
         use_devices=n_devices
     )
     trainer = BufferTrainer(config)

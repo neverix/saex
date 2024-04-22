@@ -5,13 +5,13 @@ from typing import Dict, Literal, NamedTuple, Tuple, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.sharding as jshard
 import numpy as np
 import safetensors
 from jax.experimental.checkify import checkify
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
-import jax.sharding as jshard
-from jax.sharding import PartitionSpec as P
 
 from . import utils
 from .geometric_median import geometric_median
