@@ -67,7 +67,7 @@ class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
 
-        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(-1, 1), axis_names=("dp", "mp"))
+        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(1, -1), axis_names=("dp", "mp"))
         
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
@@ -81,18 +81,11 @@ class BufferTrainer(object):
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
             print("Creating SAE...")
-            self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config)
-            print(jax.tree_flatten(self.sae_state))
-            spec_sae, spec_state = self.sae.get_partition_spec()
+            self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config, self.mesh)
             if config.sae_restore:
                 print(f"Loading checkpoint ({config.sae_restore})...")
                 self.sae = self.sae.restore(config.sae_restore)
-            self.sharding_sae = jax.tree_util.tree_map(
-                lambda x: (jshard.NamedSharding(self.mesh, x) if isinstance(x, P) else None),
-                spec_sae)
-            self.sae = eqx.filter_shard(self.sae, self.sharding_sae)
-            self.sharding_sae_state = jshard.NamedSharding(self.mesh, spec_state)
-            self.sae_state = eqx.filter_shard(self.sae_state, self.sharding_sae_state)
+            self.sharding_sae =  self.sae.sharding
         
         if model is None:
             print("Loading model...")
@@ -163,7 +156,9 @@ class BufferTrainer(object):
         ):
             batch = jnp.nan_to_num(batch)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
-            sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
+            # SAE state is pretty small and there's no quadratic scaling, so we don't need to shard it as hard
+            # (I don't think equinox state can be sharded... StateIndex is not ordered, so tree_flatten won't work)
+            # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
             opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             
@@ -177,7 +172,7 @@ class BufferTrainer(object):
                                                    batch, sae_output, step, key)
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
-            sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
+            # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
             opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             return sae_params, sae_state, opt_state, stats

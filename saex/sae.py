@@ -10,6 +10,7 @@ import safetensors
 from jax.experimental.checkify import checkify
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
+import jax.sharding as jshard
 from jax.sharding import PartitionSpec as P
 
 from . import utils
@@ -69,46 +70,66 @@ class SAE(eqx.Module):
     num_steps: eqx.nn.StateIndex
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
+    
+    sharding: Dict[str, jshard.NamedSharding]
+    state_sharding: Dict[str, jshard.NamedSharding]
 
-    def __init__(self, config, key=None):
+    def __init__(self, config, mesh: jshard.Mesh, key=None):
         if key is None:
             key = utils.get_key()
         key, w_enc_subkey, w_dec_subkey = jax.random.split(key, 3)
         self.config = config
         self.d_hidden = config.n_dimensions * config.expansion_factor
+        
+        spec, state_spec = self.get_partition_spec()
+        sharding = {k: jshard.NamedSharding(mesh, v) for k, v in spec.items()}
+        state_sharding = {k: jshard.NamedSharding(mesh, v) for k, v in state_spec.items()}
+        self.sharding = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), self)
+        self.state_sharding = state_sharding
+        
         if config.encoder_init_method == "kaiming":
             self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
         elif config.encoder_init_method == "orthogonal":
             self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
         else:
             raise ValueError(f"Unknown encoder init method: \"{config.encoder_init_method}\"")
-        self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean)
-        self.s = jnp.ones((self.d_hidden,))
-        self.b_dec = jnp.zeros((config.n_dimensions,))
+        self.W_enc = jax.device_put(self.W_enc, sharding["W_enc"])
+        
+        self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean, device= sharding["b_enc"])
+        self.s = jnp.ones((self.d_hidden,), device=sharding["s"])
+        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"])
 
         if config.decoder_init_method == "kaiming":
             self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
+            self.W_dec = jax.device_put(self.W_dec, sharding["W_dec"])
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "orthogonal":
             self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
+            self.W_dec = jax.device_put(self.W_dec, sharding["W_dec"])
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "pseudoinverse":
             if config.restrict_dec_norm == "none":
                 self.W_dec = jnp.linalg.pinv(self.W_enc)
             else:
                 W_enc = self.W_enc
+                # TODO parallelize?
                 for _ in range(5):
                     W_dec = jnp.linalg.pinv(W_enc)
                     W_dec = self.normalize_w_dec(W_dec)
                     W_enc = jnp.linalg.pinv(W_dec)
+                W_enc = jax.device_put(W_enc, sharding["W_enc"])
+                W_dec = jax.device_put(W_dec, sharding["W_dec"])
                 self.W_enc, self.W_dec = W_enc, W_dec
         else:
             raise ValueError(f"Unknown decoder init method: \"{config.decoder_init_method}\"")
 
-        self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
+        self.time_since_fired = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
+                                                            device=state_sharding["time_since_fired"]))
         self.num_steps = eqx.nn.StateIndex(jnp.array(0))
-        self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
-        self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,)))
+        self.avg_loss_sparsity = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
+                                                             device=state_sharding["avg_loss_sparsity"]))
+        self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
+                                                  device=state_sharding["avg_l0"]))
     
 
     def forward(self, activations: jax.Array):
@@ -376,10 +397,10 @@ class SAE(eqx.Module):
                 "W_dec": P(None, None),
                 "b_dec": P(None),
             }, {
-                self.time_since_fired: P(None),
-                self.num_steps: P(),
-                self.avg_loss_sparsity: P(None),
-                self.avg_l0: P(None),
+                "time_since_fired": P(None),
+                "num_steps": P(),
+                "avg_loss_sparsity": P(None),
+                "avg_l0": P(None),
             }
         else:
             spec, state_spec = {
@@ -389,12 +410,11 @@ class SAE(eqx.Module):
                 "W_dec": P("mp", None),
                 "b_dec": P(None),
             }, {
-                self.time_since_fired: P("mp"),
-                self.num_steps: P(),
-                self.avg_loss_sparsity: P("mp"),
-                self.avg_l0: P("mp"),
+                "time_since_fired": P("mp"),
+                "num_steps": P(),
+                "avg_loss_sparsity": P("mp"),
+                "avg_l0": P("mp"),
             }
-        spec = jax.tree_util.tree_map_with_path(lambda path, x: spec.get(path[0].name), self)
         return spec, state_spec
 
     def restore(self, weights_path: os.PathLike):

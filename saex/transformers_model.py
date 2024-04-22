@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import transformers
 from oryx.core import sow, plant
 import jax.sharding as jshard
@@ -24,7 +25,14 @@ class TransformersModel(object):
         
         self._model = transformers.FlaxAutoModelForCausalLM.from_pretrained(
                 config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
-        self._model.params = jax.device_put_replicated(self._model.params, mesh.devices)
+
+        devices = list(np.ravel(mesh.devices))
+        # values values keys values values
+        values = self._model.params
+        self._model.params = {k: v for k, v in zip(
+            values.keys(), jax.device_put_sharded(list(values.values()), devices))}
+        self.sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("dp", None))
+
         self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values
         self._compute_activations = jax.jit(lambda *a, **k: self._model(*a, **k).hidden_states[self.config.layer],
                               static_argnames=("output_hidden_states"))
@@ -96,9 +104,6 @@ class TransformersModel(object):
             tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
         tokens = {k: jax.device_put(v, self.sharding) for k, v in tokens.items()}
         return tokens
-    
-    def __del__(self):
-        self.patcher.__exit__(None, None, None)
 
 
 @dataclass
