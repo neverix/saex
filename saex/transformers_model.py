@@ -26,11 +26,11 @@ class TransformersModel(object):
         self._model = transformers.FlaxAutoModelForCausalLM.from_pretrained(
                 config.model_name_or_path, dtype=config.dtype, from_pt=config.from_pt, config=model_config)
 
-        devices = list(np.ravel(mesh.devices))
-        # values values keys values values
         values = self._model.params
-        self._model.params = {k: v for k, v in zip(
-            values.keys(), jax.device_put_sharded(list(values.values()), devices))}
+        self._model.params = jax.device_put(
+            values, jax.tree_map(
+                lambda x: jshard.NamedSharding(mesh, jshard.PartitionSpec(*((None,) * len(x.shape)))),
+                values))
         self.sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("dp", None))
 
         self._compute_key_values = lambda *a, **k: self._model(*a, **k).past_key_values

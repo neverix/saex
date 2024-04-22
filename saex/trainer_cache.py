@@ -85,7 +85,9 @@ class BufferTrainer(object):
             if config.sae_restore:
                 print(f"Loading checkpoint ({config.sae_restore})...")
                 self.sae = self.sae.restore(config.sae_restore)
-            self.sharding_sae =  self.sae.sharding
+            sharding = {k: jshard.NamedSharding(self.mesh, v) for k, v in self.sae.get_partition_spec()[0].items()}
+            sae_params, _ = eqx.partition(self.sae, lambda x: eqx.is_array(x))
+            self.sharding_sae = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), sae_params)
         
         if model is None:
             print("Loading model...")
@@ -166,6 +168,7 @@ class BufferTrainer(object):
             (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             sae = eqx.combine(sae_params, sae_static)
+            stats = sae.get_stats(sae_state, batch, sae_output)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
@@ -219,11 +222,12 @@ class BufferTrainer(object):
                     # self.buffer_state, batch = self.buffer.sample_batch(
                     #     self.buffer_state, self.config.sae_config.batch_size, subkey)
                     subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
-                    subkeys = eqx.filter_shard(subkeys.reshape(self.mesh.shape[0], -1),
-                                               jshard.NamedSharding(self.mesh, P("dp", None)))
+                    subkeys = eqx.filter_shard(subkeys.reshape(self.mesh.shape["dp"], -1, subkeys.shape[-1]),
+                                               jshard.NamedSharding(self.mesh, P("dp", None, None)))
                     self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
-                                                        in_axes=(None, 1), out_axes=(None, 0))(
+                                                        in_axes=(None, 1), out_axes=(None, 1))(
                                                             self.buffer_state, subkeys)
+                    batch = batch.reshape(-1, batch.shape[-1])
                 
                 batch = eqx.filter_shard(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
                 

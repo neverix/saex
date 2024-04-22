@@ -70,9 +70,6 @@ class SAE(eqx.Module):
     num_steps: eqx.nn.StateIndex
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
-    
-    sharding: Dict[str, jshard.NamedSharding]
-    state_sharding: Dict[str, jshard.NamedSharding]
 
     def __init__(self, config, mesh: jshard.Mesh, key=None):
         if key is None:
@@ -84,8 +81,6 @@ class SAE(eqx.Module):
         spec, state_spec = self.get_partition_spec()
         sharding = {k: jshard.NamedSharding(mesh, v) for k, v in spec.items()}
         state_sharding = {k: jshard.NamedSharding(mesh, v) for k, v in state_spec.items()}
-        self.sharding = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), self)
-        self.state_sharding = state_sharding
         
         if config.encoder_init_method == "kaiming":
             self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
