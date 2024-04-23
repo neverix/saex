@@ -35,7 +35,8 @@ class SAEConfig:
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
-    sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh", "hoyer"], Tuple[Literal["recip"], float]] = "l1"
+    sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh", "hoyer", "recip"]] = "l1"
+    recip_schedule: Tuple[Tuple[int, float]] = ((10_000, 0.2), (20_000, 0.1), (100_000, 0.05))
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
     
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
@@ -154,7 +155,7 @@ class SAE(eqx.Module):
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
             state = state.set(self.num_steps, state.get(self.num_steps) + 1)
         post_relu = jax.nn.relu(pre_relu)
-        sparsity_loss = self.sparsity_loss(post_relu)
+        sparsity_loss = self.sparsity_loss(post_relu, state=state)
         hidden = post_relu * self.s
         out = hidden @ self.W_dec + self.b_dec
         reconstruction_loss = self.reconstruction_loss(out, activations)
@@ -182,11 +183,13 @@ class SAE(eqx.Module):
         else:
             return output, state
 
-    def sparsity_loss(self, activations):
-        if isinstance(self.config.sparsity_loss_type, tuple):
-            assert self.config.sparsity_loss_type[0] == "recip"
-            return activations / (activations + self.config.sparsity_loss_type[1])
-        if self.config.sparsity_loss_type == "l1":
+    def sparsity_loss(self, activations, state):
+        if self.config.sparsity_loss_type == "recip":
+            step = state.get(self.num_steps)
+            steps, values = map(jnp.asarray, zip(*self.config.recip_schedule))
+            idx = jnp.searchsorted(steps, step, side="right")
+            return activations / (activations + values[idx])
+        elif self.config.sparsity_loss_type == "l1":
             return jnp.abs(activations)
         elif self.config.sparsity_loss_type == "hoyer":
             # every other loss is per-dimension
@@ -216,7 +219,7 @@ class SAE(eqx.Module):
         elif self.config.death_loss_type == "sparsity_threshold":
             # eps = 1e-5
             post_relu = jax.nn.relu(pre_relu)
-            sparsity = self.sparsity_loss(post_relu).mean(0)
+            sparsity = self.sparsity_loss(post_relu, state=state).mean(0)
             # log_sparsity = jnp.nan_to_num(jnp.log10(sparsity + eps))
             # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.avg_loss_sparsity) + eps) - log_sparsity)
             offset = 0
