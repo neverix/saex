@@ -44,4 +44,11 @@ Data and tensor parallelism. In theory, the size of the SAE is unlimited. In pra
 
 > Are results comparable to SAELens?
 
-On Layer 1, somewhat. However, our SAEs train much faster (~10 minutes) and use less tokens because L0 starts rising beyond a certain point. Because of this, L0s for later layers are ~30% higher than SAELens.
+Yes. I haven't tested with smaller batch sizes, but you can get comparable results for GPT2-Small Layer 9 with ~25% less tokens and ~3x lower training time.
+
+> What techniques does `saex` use?
+
+* [Methodology is overall similar to Bloom 2024](https://www.lesswrong.com/posts/f9EgfLSurAiqRJySD/open-source-sparse-autoencoders-for-all-residual-stream)
+* [Decoder weight parametrization from Wright 2024](https://www.lesswrong.com/posts/3JuSjTZyMzaSeTxKk/addressing-feature-suppression-in-saes)
+* [An alternative L0 approximation by Eoin Farrell](https://www.lesswrong.com/posts/cYA3ePxy8JQ8ajo8B/experiments-with-an-alternative-method-to-promote-sparsity)
+* [Deepmind's scaled ghost gradients, modified to use Softplus](https://www.alignmentforum.org/posts/C5KAZQib3bzzpeyrg/progress-update-1-from-the-gdm-mech-interp-team-full-update)
