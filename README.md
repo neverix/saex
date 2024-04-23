@@ -40,12 +40,8 @@ No one actually asked these questions, but here are the answers anyway.
 
 > How is this code parallelized?
 
-Currently, we only use data parallel - splitting activation buffers and batches across devices and replicating the rest. In the future, I hope we can train giant SAEs multi-node with tensor parallel.
+Data and tensor parallelism. In theory, the size of the SAE is unlimited. In practice, it is initialized on one device.
 
-> Why was this code written this way?
+> Are results comparable to SAELens?
 
-Dependency inversion.
-
-> What, how?
-
-Dependency inversion.
+On Layer 1, somewhat. However, our SAEs train much faster (~10 minutes) and use less tokens because L0 starts rising beyond a certain point. Because of this, L0s for later layers are ~30% higher than SAELens.

@@ -79,7 +79,7 @@ class BufferTrainer(object):
                 config.buffer_max_samples, config.n_dimensions,
                 dtype=config.buffer_dtype, mesh=self.mesh)
             if config.restore_buffer:
-                print("Loading buffer...")
+                print(f"Loading buffer ({config.restore_buffer})...")
                 self.buffer_state = self.buffer.restore(
                     self.buffer_state, config.restore_buffer)
         if sae is not None:
@@ -269,10 +269,10 @@ class BufferTrainer(object):
                     self.sae.save(self.config.save_path)
         except KeyboardInterrupt:
             print("Exiting early...")
-            if self.config.save_buffer:
-                save_buffer = input("Save buffer? (y/N)")
-                if save_buffer.lower() in ("y", "yes"):
-                    self.buffer.save(self.buffer_state, self.config.save_buffer)
+        if self.config.save_buffer:
+            save_buffer = input("Save buffer? (y/N)")
+            if save_buffer.lower() in ("y", "yes"):
+                self.buffer.save(self.buffer_state, self.config.save_buffer)
         run.finish()
 
 
@@ -289,22 +289,23 @@ def main():
     restore = False
     n_features = 768
     # n_features = 1600
+    
     # buffer_restore = "weights/buffer.safetensors"
     buffer_restore = None
     save_buffer = False
     config = BufferTrainerConfig(
         n_dimensions=n_features,
-        lr=4e-4,
+        lr=1e-4,
         # lr=6e-5,
         beta1=0.0,
         # beta1=0.99,
+        # beta2=0.99,
         beta2=0.99,
-        # beta2=0.999,
         # beta2=0.9999,
         scheduler_warmup=128,
         scheduler_cycle=100_000,
         scheduler_multiply=0.1,
-        train_iterations=5_000,
+        train_iterations=20_000,
         save_steps=1_000,
         # save_steps=None,
         use_wandb=("neverix", "saex"),
@@ -319,7 +320,7 @@ def main():
             # sparsity_loss_type=("recip", 0.2),
             # sparsity_loss_type="hoyer",
             sparsity_loss_type="l1",
-            sparsity_coefficient=1.45e-4,
+            sparsity_coefficient=2e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=3e-5,
