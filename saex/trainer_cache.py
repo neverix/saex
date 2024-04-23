@@ -68,7 +68,7 @@ class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
 
-        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(1, -1), axis_names=("dp", "mp"))
+        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(-1, 1), axis_names=("dp", "mp"))
         
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
@@ -106,6 +106,7 @@ class BufferTrainer(object):
 
     def train(self):
         print("Training for", self.config.train_iterations, "iterations")
+        print("Sparsity coefficient:", self.config.sae_config.sparsity_coefficient)
         
         if self.config.use_wandb:
             entity, project = self.config.use_wandb
@@ -288,21 +289,24 @@ def main():
     restore = False
     n_features = 768
     # n_features = 1600
-    buffer_restore = "weights/buffer.safetensors"
+    # buffer_restore = "weights/buffer.safetensors"
+    buffer_restore = None
+    save_buffer = False
     config = BufferTrainerConfig(
         n_dimensions=n_features,
         lr=4e-4,
         # lr=6e-5,
         beta1=0.0,
         # beta1=0.99,
-        # beta2=0.99,
-        beta2=0.999,
+        beta2=0.99,
+        # beta2=0.999,
+        # beta2=0.9999,
         scheduler_warmup=128,
         scheduler_cycle=100_000,
         scheduler_multiply=0.1,
-        train_iterations=20_000,
-        # save_steps=1_000,
-        save_steps=None,
+        train_iterations=5_000,
+        save_steps=1_000,
+        # save_steps=None,
         use_wandb=("neverix", "saex"),
         log_every=10,
         hist_every=100,
@@ -315,8 +319,7 @@ def main():
             # sparsity_loss_type=("recip", 0.2),
             # sparsity_loss_type="hoyer",
             sparsity_loss_type="l1",
-            # sparsity_coefficient=2e-4,
-            sparsity_coefficient=1.6e-4,
+            sparsity_coefficient=1.45e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=3e-5,
@@ -370,7 +373,7 @@ def main():
         loss_batch_size=16,
         eval_loss_every=512,
         buffer_dtype=jnp.float32,
-        save_buffer="weights/buffer.safetensors",
+        save_buffer=None if buffer_restore else "weights/buffer.safetensors" if save_buffer else None,
         restore_buffer=buffer_restore,
         use_devices=n_devices
     )

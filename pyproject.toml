@@ -45,6 +45,9 @@ priority = "supplemental"
 isort = "^5.13.2"
 ipykernel = "^6.29.4"
 astor = "^0.8.1"
+plotly = "^5.21.0"
+ipympl = "^0.9.4"
+nbformat = "^5.10.4"
 
 [tool.flake8]
 max-line-length = 120
