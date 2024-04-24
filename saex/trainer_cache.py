@@ -281,14 +281,14 @@ def main():
  
     n_devices = len(jax.devices())
     # n_devices = 1
-    layer = 9
+    layer = 20
     cache_size = 2**19  # // n_devices
     cache_batch_size = 1024  # // n_devices
     batch_size = 1024  #// n_devices
     max_seq_len = 128
     restore = False
-    n_features = 768
-    # n_features = 1600
+    # n_features = 768
+    n_features = 1600
     
     # buffer_restore = "weights/buffer.safetensors"
     buffer_restore = None
@@ -322,16 +322,18 @@ def main():
             # sparsity_loss_type="l1_sqrt",
             sparsity_loss_type="recip",
             # recip_schedule = ((5_000, 0.2), (10_000, 0.1), (20_000, 0.05)),
-            recip_schedule = ((50_000, 0.1),),
+            recip_schedule = ((100_000, 0.1),),
             # sparsity_loss_type="hoyer",
             # sparsity_loss_type="l1",
             # sparsity_coefficient=2e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
-            sparsity_coefficient=9e-5,
+            # sparsity_coefficient=9e-5,
             # sparsity_coefficient=7e-5,
             # sparsity_coefficient=5e-5,
+            sparsity_coefficient=4e-5,
             # sparsity_coefficient=3e-5,
+            # sparsity_coefficient=1e-5,
             # sparsity_coefficient=2e-3,
             batch_size=batch_size,
             expansion_factor=32,
@@ -364,8 +366,8 @@ def main():
         buffer_max_samples=cache_size,
         # buffer_max_samples=0,
         model_config=TransformersModelConfig(
-            # model_name_or_path="openai-community/gpt2-xl",
-            model_name_or_path="gpt2",
+            model_name_or_path="openai-community/gpt2-xl",
+            # model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
             layer=layer,
