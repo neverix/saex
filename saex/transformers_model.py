@@ -1,6 +1,7 @@
 import os
 import weakref
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Dict, List
 
 import equinox as eqx
@@ -63,17 +64,24 @@ class TransformersModel(object):
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
 
     def eval_loss(self, texts, autoencoder):
+        tokens = self.encode_texts(texts)
+        assert (self.config.cache_n == 0) or (self._cache[0] is not None)
+        assert isinstance(self._model, transformers.models.gpt2.modeling_flax_gpt2.FlaxGPT2LMHeadModel)
+        sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
+        loss, loss_reconstructed = self.loss_computation(
+            dict(**tokens, past_key_values=self._cache[0]), sae_params, sae_static)
+
+        return loss, loss_reconstructed
+    
+    # @partial(jax.jit, static_argnums=(3,))
+    def loss_computation(self, kwargs, sae_params, sae_static):
+        autoencoder = eqx.combine(sae_params, sae_static)
+        assert (self.config.cache_n == 0) or (self._cache[0] is not None)
         with self.patcher:
-            tokens = self.encode_texts(texts)
-            assert (self.config.cache_n == 0) or (self._cache[0] is not None)
-            loss, hidden_states = self.compute_loss(**tokens, past_key_values=self._cache[0])
-            assert isinstance(self._model, transformers.models.gpt2.modeling_flax_gpt2.FlaxGPT2LMHeadModel)
-
+            loss, hidden_states = self.compute_loss(**kwargs)
             reconstructed = autoencoder.forward(hidden_states)
-            loss_reconstructed, _ = plant(self.compute_loss, tag="hidden")(
-                {"resid_pre": reconstructed}, **tokens, past_key_values=self._cache[0])
-
-        return (loss, loss_reconstructed)
+            loss_reconstructed, _ = plant(self.compute_loss, tag="hidden")({"resid_pre": reconstructed}, **kwargs)
+        return loss, loss_reconstructed
 
     def compute_loss(self, input_ids, attention_mask, past_key_values=None):
         labels = input_ids[:, 1:]

@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.experimental.mesh_utils as mesh_utils
 import jax.numpy as jnp
 import jax.sharding as jshard
 import jax_smi
@@ -330,8 +329,8 @@ def main():
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=9e-5,
             # sparsity_coefficient=7e-5,
+            sparsity_coefficient=6e-5,
             # sparsity_coefficient=5e-5,
-            sparsity_coefficient=4e-5,
             # sparsity_coefficient=3e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=2e-3,
@@ -383,7 +382,7 @@ def main():
             # dataset_name="nev/lamini-dataset-text",
         ),
         loss_batch_size=16,
-        eval_loss_every=512,
+        eval_loss_every=900_000,  # loss evaluation takes too long
         buffer_dtype=jnp.float32,
         save_buffer=None if buffer_restore else "weights/buffer.safetensors" if save_buffer else None,
         restore_buffer=buffer_restore,

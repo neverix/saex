@@ -22,43 +22,42 @@ class Patcher(object):
             raise ValueError("Must specify module before patching: Patcher().in_module(\"module\")")
         module_name = self._module
         full_name = f"{module_name}.{target}"
-        def patch_fn():
-            module, orig = get_obj_from_str(module_name, target)
-            
-            own_stacks = 0
-            for callerframerecord in inspect.stack():
-                frame = callerframerecord[0]
-                info = inspect.getframeinfo(frame)
-                if own_stacks == 2:
-                    break
-                if info.filename == __file__:
-                    own_stacks += 1
-            pos_keys = ["lineno", "col_offset", "end_lineno", "end_col_offset"]
-            kwargs = {k: getattr(info.positions, k) for k in pos_keys}
-            
-            source, offset = inspect.getsourcelines(orig)
-            indent = len(source[0]) - len(source[0].lstrip())
-            source = "".join([line[indent:] for line in source])
-            
-            filename = inspect.getsourcefile(orig)
-            
-            orig_ast = ast.parse(source)
-            obj_ast = orig_ast
-            for source_line, target_line in replacements:
-                obj_ast = NodeReplacer(
-                    ast.parse(source_line).body[0], ast.parse(target_line).body[0],
-                    offset - 1, indent, filename, self._patcher_traces, kwargs).visit(obj_ast)
-            obj_ast.body[0].end_lineno = (obj_ast.body[0].end_lineno - obj_ast.body[0].lineno) + offset + 1
-            obj_ast.body[0].lineno = offset + 1
-            obj_ast = ast.fix_missing_locations(obj_ast)
-            code = compile(obj_ast, filename=filename, mode="exec")
-            # env = {**orig.__globals__, **additional_context}
-            env = {**module.__dict__, **additional_context}
-            exec(code, env)
-            replacement = env[orig.__name__]
-            return replacement
+
+        module, orig = get_obj_from_str(module_name, target)
         
-        self._patches.append(patch(full_name, new_callable=patch_fn))
+        own_stacks = 0
+        for callerframerecord in inspect.stack():
+            frame = callerframerecord[0]
+            info = inspect.getframeinfo(frame)
+            if own_stacks == 2:
+                break
+            if info.filename == __file__:
+                own_stacks += 1
+        pos_keys = ["lineno", "col_offset", "end_lineno", "end_col_offset"]
+        kwargs = {k: getattr(info.positions, k) for k in pos_keys}
+        
+        source, offset = inspect.getsourcelines(orig)
+        indent = len(source[0]) - len(source[0].lstrip())
+        source = "".join([line[indent:] for line in source])
+        
+        filename = inspect.getsourcefile(orig)
+        
+        orig_ast = ast.parse(source)
+        obj_ast = orig_ast
+        for source_line, target_line in replacements:
+            obj_ast = NodeReplacer(
+                ast.parse(source_line).body[0], ast.parse(target_line).body[0],
+                offset - 1, indent, filename, self._patcher_traces, kwargs).visit(obj_ast)
+        obj_ast.body[0].end_lineno = (obj_ast.body[0].end_lineno - obj_ast.body[0].lineno) + offset + 1
+        obj_ast.body[0].lineno = offset + 1
+        obj_ast = ast.fix_missing_locations(obj_ast)
+        code = compile(obj_ast, filename=filename, mode="exec")
+        # env = {**orig.__globals__, **additional_context}
+        env = {**module.__dict__, **additional_context}
+        exec(code, env)
+        replacement = env[orig.__name__]
+        
+        self._patches.append(patch(full_name, replacement))
         return self
 
     def __enter__(self):
