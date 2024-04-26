@@ -185,6 +185,19 @@ class BufferTrainer(object):
             opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             return sae_params, sae_state, opt_state, stats
 
+        @partial(jax.jit, donate_argnums=(0,))
+        def update_buffer(mid_buffer, activations, mask, accumulated):
+            n_tokens = mask.sum()
+            raw_tokens = activations.reshape(-1, activations.shape[-1])
+            mask = mask.flatten()
+            indices = jnp.nonzero(mask, size=mask.size, fill_value=mask.size)
+            update = raw_tokens[indices]
+            update = jnp.where(mask[indices][:, None],
+                                update,
+                                jax.lax.dynamic_slice(raw_tokens, (accumulated, 0), (mask.size, raw_tokens.shape[-1])))
+            mid_buffer = jax.lax.dynamic_update_slice(mid_buffer, update, (accumulated, 0))
+            return mid_buffer, n_tokens
+
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
         tokens_processed = 0
         try:
@@ -204,13 +217,16 @@ class BufferTrainer(object):
                         activations, model_misc = self.model(texts)
                         mask = model_misc.get("mask")
                         if mask is not None:
-                            n_tokens = mask.sum()
-                            raw_tokens = activations.reshape(-1, activations.shape[-1])[mask.flatten()]
-                            mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(raw_tokens)  # ..
-                            accumulated += n_tokens
+                            mid_buffer, n_tokens = update_buffer(mid_buffer, activations, mask, accumulated)
                         else:
-                            n_tokens = np.prod(activations.shape[:-1])
+                            # untested
+                            raw_tokens = activations.reshape(-1, activations.shape[-1])
+                            n_tokens = raw_tokens.shape[0]
+                            mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(
+                                raw_tokens[:min(n_tokens, mid_buffer.shape[0] - accumulated)])
+                        accumulated += n_tokens
                         tokens_processed += n_tokens
+                        print(accumulated, n_tokens)
                     if self.buffer is not None:
                         self.buffer_state = self.buffer(mid_buffer, self.buffer_state)
                 
@@ -258,8 +274,8 @@ class BufferTrainer(object):
                         loss_clean, loss_reconstructed = self.model.eval_loss(texts, self.sae)
                         run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed,
                                  "recon_loss_diff": loss_reconstructed - loss_clean}, step=iteration)
-                
-                # TODO: track in wandb or other logger:
+
+                # TODO: track in wandb:
                 # - learning rate
                 # - norm ratio
                 
@@ -280,17 +296,19 @@ def main():
  
     n_devices = len(jax.devices())
     # n_devices = 1
-    layer = 20
     cache_size = 2**19  # // n_devices
-    cache_batch_size = 1024  # // n_devices
+    cache_batch_size = 128  # // n_devices
     batch_size = 1024  #// n_devices
-    max_seq_len = 128
+    max_seq_len = 1024
     restore = False
-    # n_features = 768
-    n_features = 1600
+    is_xl = False
+    n_features = 1600 if is_xl else 768
+    layer = 20 if is_xl else 9
     
-    # buffer_restore = "weights/buffer.safetensors"
-    buffer_restore = None
+    if 0:
+        buffer_restore = "weights/buffer.safetensors"
+    else:
+        buffer_restore = None
     save_buffer = False
     config = BufferTrainerConfig(
         n_dimensions=n_features,
@@ -327,9 +345,9 @@ def main():
             # sparsity_coefficient=2e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
-            # sparsity_coefficient=9e-5,
+            sparsity_coefficient=9e-5,
             # sparsity_coefficient=7e-5,
-            sparsity_coefficient=6e-5,
+            # sparsity_coefficient=6e-5,
             # sparsity_coefficient=5e-5,
             # sparsity_coefficient=3e-5,
             # sparsity_coefficient=1e-5,
@@ -365,7 +383,7 @@ def main():
         buffer_max_samples=cache_size,
         # buffer_max_samples=0,
         model_config=TransformersModelConfig(
-            model_name_or_path="openai-community/gpt2-xl",
+            model_name_or_path="openai-community/gpt2-xl" if is_xl else "gpt2",
             # model_name_or_path="gpt2",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
@@ -375,7 +393,7 @@ def main():
             concat_all=False,
             
             # cache_n=25,
-            return_real_mask=False,
+            return_real_mask=True,
         ),
         dataset_config=IterableDatasetConfig(
             dataset_name="Skylion007/openwebtext",

@@ -52,3 +52,9 @@ Yes. I haven't tested with smaller batch sizes, but you can get comparable resul
 * [Decoder weight parametrization from Wright 2024](https://www.lesswrong.com/posts/3JuSjTZyMzaSeTxKk/addressing-feature-suppression-in-saes)
 * [An alternative L0 approximation by Eoin Farrell](https://www.lesswrong.com/posts/cYA3ePxy8JQ8ajo8B/experiments-with-an-alternative-method-to-promote-sparsity)
 * [Deepmind's scaled ghost gradients, modified to use Softplus](https://www.alignmentforum.org/posts/C5KAZQib3bzzpeyrg/progress-update-1-from-the-gdm-mech-interp-team-full-update)
+
+# TODOs
+* LLaMA/TinyLLaMA support
+* [Gated SAEs](https://arxiv.org/abs/2404.16014)
+* Make loss evaluation faster (jitted)
+* Tensor parallel for models
