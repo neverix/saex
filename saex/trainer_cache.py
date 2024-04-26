@@ -226,7 +226,6 @@ class BufferTrainer(object):
                                 raw_tokens[:min(n_tokens, mid_buffer.shape[0] - accumulated)])
                         accumulated += n_tokens
                         tokens_processed += n_tokens
-                        print(accumulated, n_tokens)
                     if self.buffer is not None:
                         self.buffer_state = self.buffer(mid_buffer, self.buffer_state)
                 
@@ -297,11 +296,11 @@ def main():
     n_devices = len(jax.devices())
     # n_devices = 1
     cache_size = 2**19  # // n_devices
-    cache_batch_size = 128  # // n_devices
+    cache_batch_size = 256  # // n_devices
     batch_size = 1024  #// n_devices
     max_seq_len = 1024
     restore = False
-    is_xl = False
+    is_xl = True
     n_features = 1600 if is_xl else 768
     layer = 20 if is_xl else 9
     
@@ -345,11 +344,11 @@ def main():
             # sparsity_coefficient=2e-4,
             # sparsity_coefficient=7.5e-5,
             # sparsity_coefficient=1e-5,
-            sparsity_coefficient=9e-5,
+            # sparsity_coefficient=9e-5,
             # sparsity_coefficient=7e-5,
             # sparsity_coefficient=6e-5,
             # sparsity_coefficient=5e-5,
-            # sparsity_coefficient=3e-5,
+            sparsity_coefficient=3e-5,
             # sparsity_coefficient=1e-5,
             # sparsity_coefficient=2e-3,
             batch_size=batch_size,
