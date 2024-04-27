@@ -428,6 +428,7 @@ class SAE(eqx.Module):
         return self
 
     def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float16):
+        os.makedirs(os.path.dirname(weights_path), exist_ok=True)
         state_dict = {
             "W_enc": self.W_enc,
             "b_enc": self.b_enc,
