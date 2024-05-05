@@ -128,8 +128,7 @@ class SAE(eqx.Module):
                                                   device=state_sharding["avg_l0"]))
     
 
-    def forward(self, activations: jax.Array):
-        activations = activations.astype(jnp.float32)
+    def encode(self, activations: jax.Array):
         inputs = activations
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
@@ -137,24 +136,21 @@ class SAE(eqx.Module):
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         post_relu = jax.nn.relu(pre_relu)
+        return pre_relu, post_relu
+
+    def forward(self, activations: jax.Array):
+        _, post_relu = self.encode(activations)
         hidden = post_relu * self.s
         out = hidden @ self.W_dec + self.b_dec
         return out
 
     def __call__(self, activations: jax.Array, state=None):
-        activations = activations.astype(jnp.float32)
-        inputs = activations
-        if self.config.remove_decoder_bias:
-            inputs = inputs - self.b_dec
-        pre_relu = inputs @ self.W_enc
-        if self.config.use_encoder_bias:
-            pre_relu = pre_relu + self.b_enc
+        pre_relu, post_relu = self.encode(activations)
         active = pre_relu > 0
         if state is not None:
             state = state.set(self.time_since_fired,
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
             state = state.set(self.num_steps, state.get(self.num_steps) + 1)
-        post_relu = jax.nn.relu(pre_relu)
         sparsity_loss = self.sparsity_loss(post_relu, state=state)
         hidden = post_relu * self.s
         out = hidden @ self.W_dec + self.b_dec

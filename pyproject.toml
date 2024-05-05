@@ -25,6 +25,7 @@ tokenizers = "^0.19.1"
 torch = {version = "^2.2.2+cpu", source = "torch-cpu"}
 jax-smi = {git = "https://github.com/neverix/jax-smi.git", rev="eb75686f31258a4cc05c1ddc7723d74e302a0ecd"}
 oryx = "^0.2.6"
+fire = "^0.6.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1"
