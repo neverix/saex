@@ -7,7 +7,7 @@ license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 numpy = "^1.26.4"
 jax = {version = "^0.4.26", extras = ["tpu"]}
 einops = "^0.7.0"
@@ -26,6 +26,7 @@ torch = {version = "^2.2.2+cpu", source = "torch-cpu"}
 jax-smi = {git = "https://github.com/neverix/jax-smi.git", rev="eb75686f31258a4cc05c1ddc7723d74e302a0ecd"}
 oryx = "^0.2.6"
 fire = "^0.6.0"
+micrlhf-progress = {git = "https://github.com/neverix/micrlhf-progress.git"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1"

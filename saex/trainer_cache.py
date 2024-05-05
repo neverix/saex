@@ -15,11 +15,11 @@ from tqdm.auto import trange
 
 import wandb
 
-from . import utils
+from . import  utils
 from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .sae import SAE, SAEConfig
-from .transformers_model import TransformersModelConfig
+from .models.transformers_model import TransformersModelConfig
 
 
 @dataclass

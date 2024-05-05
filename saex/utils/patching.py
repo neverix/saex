@@ -4,7 +4,7 @@ import sys
 from copy import copy
 from unittest.mock import patch
 
-from .utils import get_obj_from_str
+from . import get_obj_from_str
 
 
 class Patcher(object):

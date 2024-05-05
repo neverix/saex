@@ -12,7 +12,7 @@ import numpy as np
 import transformers
 from oryx.core import plant, sow
 
-from .patching import Patcher
+from ..utils.patching import Patcher
 
 
 class TransformersModel(object):

@@ -14,7 +14,7 @@ from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
 
 from . import utils
-from .geometric_median import geometric_median
+from .utils.geometric_median import geometric_median
 
 
 @dataclass(frozen=True)
