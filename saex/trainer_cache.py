@@ -213,32 +213,26 @@ class BufferTrainer(object):
                 if (iteration % self.config.cache_every_steps == 0
                     or iteration < self.config.dry_run_steps
                     or self.buffer is None) and self.config.cache_acc > 0:
-                    mid_buffer = jnp.empty((
-                        self.config.cache_acc * self.config.cache_batch_size * self.config.model_config.max_seq_len,
-                        self.config.n_dimensions), dtype=self.config.buffer_dtype)
                     accumulated = 0
-                    while accumulated < mid_buffer.shape[0]:
+                    while accumulated < self.config.cache_acc * self.config.cache_batch_size * self.config.model_config.max_seq_len:
                         # cache more activations
                         texts = []
                         for _ in range(self.config.cache_batch_size):
                             texts.append(next(dataset_iterator))
                         activations, model_misc = self.model(texts)
+                        raw_tokens = activations.reshape(-1, activations.shape[-1])
                         mask = model_misc.get("mask")
                         if self.buffer is None:
                             assert mask is None
+                            n_tokens = raw_tokens.shape[0]
                         else:
-                            if mask is not None:
-                                mid_buffer, n_tokens = update_buffer(mid_buffer, activations, mask, accumulated)
-                            else:
-                                # untested
-                                raw_tokens = activations.reshape(-1, activations.shape[-1])
-                                n_tokens = raw_tokens.shape[0]
-                                mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(
-                                    raw_tokens[:min(n_tokens, mid_buffer.shape[0] - accumulated)])
-                            accumulated += n_tokens
-                            tokens_processed += n_tokens
-                    if self.buffer is not None:
-                        self.buffer_state = self.buffer(mid_buffer, self.buffer_state)
+                            if mask is None:
+                                mask = jnp.ones(raw_tokens.shape[0], dtype=jnp.bool)
+                            n_tokens = mask.sum()
+                            self.buffer_state = self.buffer(activations, mask, self.buffer_state)
+
+                        accumulated += n_tokens
+                        tokens_processed += n_tokens
                 
                 if iteration < self.config.dry_run_steps:
                     bar.set_description("Caching activations")
@@ -247,7 +241,7 @@ class BufferTrainer(object):
 
                 # train SAE
                 if self.buffer is None:
-                    batch = mid_buffer
+                    batch = raw_tokens
                 else:
                     key, subkey = jax.random.split(key, 2)
                     # self.buffer_state, batch = self.buffer.sample_batch(
