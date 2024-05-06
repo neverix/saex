@@ -4,9 +4,11 @@ Sparse autoencoders in Jax.
 ## Running
 ```bash
 # Train a small SAE on the GPT-2 residual stream. Requires at most 32GB of RAM.
-poetry run python -m saex.trainer_cache
+python -m scripts.train_gpt2_sae --is_xl=False --save_steps=0 --sparsity_coefficient=1e-4
 # Download GPT-2 residual stream SAEs for finetuning
 scripts/download_jb_saes.sh
+# Download Phi-3
+wget 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/main/phi-3-mini-4k-instruct.fp16.gguf?download=true' -O weights/phi-3-16.gguf
 # Generate data for a toy model
 JAX_PLATFORMS=cpu python -m saex.toy_models
 ```

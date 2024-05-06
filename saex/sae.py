@@ -104,18 +104,21 @@ class SAE(eqx.Module):
             self.W_dec = jax.device_put(self.W_dec, sharding["W_dec"])
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "pseudoinverse":
-            if config.restrict_dec_norm == "none":
-                self.W_dec = jnp.linalg.pinv(self.W_enc)
+            if config.encoder_init_method == "orthogonal":
+                self.W_dec = jax.device_put(self.normalize_w_dec(self.W_enc.T), sharding["W_dec"])
             else:
-                W_enc = self.W_enc
-                # TODO parallelize?
-                for _ in range(5):
-                    W_dec = jnp.linalg.pinv(W_enc)
-                    W_dec = self.normalize_w_dec(W_dec)
-                    W_enc = jnp.linalg.pinv(W_dec)
-                W_enc = jax.device_put(W_enc, sharding["W_enc"])
-                W_dec = jax.device_put(W_dec, sharding["W_dec"])
-                self.W_enc, self.W_dec = W_enc, W_dec
+                if config.restrict_dec_norm == "none":
+                    self.W_dec = jnp.linalg.pinv(self.W_enc)
+                else:
+                    W_enc = self.W_enc
+                    # TODO parallelize?
+                    for _ in range(5):
+                        W_dec = jnp.linalg.pinv(W_enc)
+                        W_dec = self.normalize_w_dec(W_dec)
+                        W_enc = jnp.linalg.pinv(W_dec)
+                    W_enc = jax.device_put(W_enc, sharding["W_enc"])
+                    W_dec = jax.device_put(W_dec, sharding["W_dec"])
+                    self.W_enc, self.W_dec = W_enc, W_dec
         else:
             raise ValueError(f"Unknown decoder init method: \"{config.decoder_init_method}\"")
 

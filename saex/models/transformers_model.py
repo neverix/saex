@@ -16,7 +16,7 @@ from ..utils.patching import Patcher
 
 
 class TransformersModel(object):
-    # Extracts features from the residual stream
+    has_mesh: bool = False
 
     def __init__(self, config: "TransformersModelConfig", mesh: jshard.Mesh):
         self.config = config

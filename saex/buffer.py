@@ -39,7 +39,7 @@ class ActivationBuffer(eqx.Module):
     def __call__(self, activations, state):
         cache, n_valid, index = state.get(self._cache), state.get(self._n_valid), state.get(self._index)
         cache = jax.lax.with_sharding_constraint(cache, self.cache_sharding)
-        activations = activations.reshape((self.mesh.shape["dp"], -1, self.n_dimensions))
+        activations = activations.reshape((self.mesh.shape["dp"], -1, self.n_dimensions)).astype(cache.dtype)
         activations = jax.lax.with_sharding_constraint(activations, jshard.NamedSharding(self.mesh, P("dp", None, None)))
         offsets = jnp.arange(activations.shape[1])
         new_n_valid = jnp.minimum(n_valid + activations.shape[1], self.max_samples)

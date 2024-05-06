@@ -15,11 +15,11 @@ from tqdm.auto import trange
 
 import wandb
 
-from . import  utils
+from . import utils
 from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
-from .sae import SAE, SAEConfig
 from .models.transformers_model import TransformersModelConfig
+from .sae import SAE, SAEConfig
 
 
 @dataclass
@@ -68,9 +68,20 @@ class BufferTrainer(object):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
         self.config = config
 
-        self.mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(
-            -1, config.mp_devices), axis_names=("dp", "mp"))
-        
+        mesh = None
+
+        if model is None:
+            print("Loading model...")
+            if config.model_config.model_class.has_mesh:
+                model = config.model_config.model_class(config.model_config)
+                mesh = model.mesh
+            else:
+                mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(
+                    -1, config.mp_devices), axis_names=("dp", "mp"))
+                model = config.model_config.model_class(config.model_config, mesh=mesh)
+        self.model = model
+        self.mesh = mesh
+
         if self.config.buffer_max_samples < self.config.sae_config.batch_size:
             print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
             self.buffer = None
@@ -94,11 +105,6 @@ class BufferTrainer(object):
             sharding = {k: jshard.NamedSharding(self.mesh, v) for k, v in self.sae.get_partition_spec()[0].items()}
             sae_params, _ = eqx.partition(self.sae, lambda x: eqx.is_array(x))
             self.sharding_sae = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), sae_params)
-        
-        if model is None:
-            print("Loading model...")
-            model = config.model_config.model_class(config.model_config, mesh=self.mesh)
-        self.model = model
         
         if create_dataset is None:
             print("Loading dataset...")
@@ -190,7 +196,7 @@ class BufferTrainer(object):
         @partial(jax.jit, donate_argnums=(0,))
         def update_buffer(mid_buffer, activations, mask, accumulated):
             n_tokens = mask.sum()
-            raw_tokens = activations.reshape(-1, activations.shape[-1])
+            raw_tokens = activations.reshape(-1, activations.shape[-1]).astype(mid_buffer.dtype)
             mask = mask.flatten()
             indices = jnp.nonzero(mask, size=mask.size, fill_value=mask.size)
             update = raw_tokens[indices]
@@ -218,16 +224,19 @@ class BufferTrainer(object):
                             texts.append(next(dataset_iterator))
                         activations, model_misc = self.model(texts)
                         mask = model_misc.get("mask")
-                        if mask is not None:
-                            mid_buffer, n_tokens = update_buffer(mid_buffer, activations, mask, accumulated)
+                        if self.buffer is None:
+                            assert mask is None
                         else:
-                            # untested
-                            raw_tokens = activations.reshape(-1, activations.shape[-1])
-                            n_tokens = raw_tokens.shape[0]
-                            mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(
-                                raw_tokens[:min(n_tokens, mid_buffer.shape[0] - accumulated)])
-                        accumulated += n_tokens
-                        tokens_processed += n_tokens
+                            if mask is not None:
+                                mid_buffer, n_tokens = update_buffer(mid_buffer, activations, mask, accumulated)
+                            else:
+                                # untested
+                                raw_tokens = activations.reshape(-1, activations.shape[-1])
+                                n_tokens = raw_tokens.shape[0]
+                                mid_buffer = mid_buffer.at[accumulated:accumulated + n_tokens].set(
+                                    raw_tokens[:min(n_tokens, mid_buffer.shape[0] - accumulated)])
+                            accumulated += n_tokens
+                            tokens_processed += n_tokens
                     if self.buffer is not None:
                         self.buffer_state = self.buffer(mid_buffer, self.buffer_state)
                 
@@ -280,7 +289,7 @@ class BufferTrainer(object):
                 # - learning rate
                 # - norm ratio
                 
-                if self.config.save_steps is not None and iteration % self.config.save_steps == 0:
+                if self.config.save_steps and iteration % self.config.save_steps == 0:
                     self.sae = eqx.combine(sae_params, sae_static)
                     self.sae.save(self.config.save_path)
         except KeyboardInterrupt:

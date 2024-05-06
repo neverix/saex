@@ -2,28 +2,26 @@ import fire
 import jax
 import jax.numpy as jnp
 
+from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.train_script import train_main
 from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
-                                SAEConfig, TransformersModelConfig)
+                                SAEConfig)
 
 
 def main(
     n_devices: int = len(jax.devices()),
     mp_devices: int = 1,
-    cache_size = 2**19,
-    cache_batch_size = 128,
+    cache_size = 2**14,
+    cache_batch_size = 10,
     batch_size = 1024,
-    max_seq_len = 1024,
-    sparsity_coefficient=5e-5,
-    save_steps=1000,
-    is_xl = True,
-    layer = 32,
-    # f"weights/jb-gpt2s-{layer}.safetensors"
+    max_seq_len = 128,
+    sparsity_coefficient=1e-5,
+    save_steps=0,
     restore = False,
-    train_on_lamini = False,
     wandb_entity = "neverix",
+    layer = 10,
 ):
-    n_features = 1600 if is_xl else 768
+    n_features = 3072
 
     config = BufferTrainerConfig(
         n_dimensions=n_features,
@@ -38,7 +36,7 @@ def main(
         use_wandb=(wandb_entity, "saex") if wandb_entity else None,
         log_every=10,
         hist_every=100,
-        save_path=f"weights/gpt2-{layer}.safetensors" if not restore else f"weights/gpt2-{layer}-tuned.safetensors",
+        save_path="",
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
@@ -47,10 +45,10 @@ def main(
             recip_schedule = ((100_000, 0.1),),
             sparsity_coefficient=sparsity_coefficient,
             batch_size=batch_size,
-            expansion_factor=32,
+            expansion_factor=8,
             use_encoder_bias=True,
             remove_decoder_bias=restore,
-            encoder_init_method="kaiming",
+            encoder_init_method="orthogonal",
             decoder_init_method="pseudoinverse",
             decoder_bias_init_method="zeros",
             # decoder_bias_init_method="geom_median" if not restore else "zeros",
@@ -70,24 +68,19 @@ def main(
         buffer_max_samples=cache_size,
         restore_buffer=False,
         save_buffer=False,
-        model_config=TransformersModelConfig(
-            model_name_or_path="openai-community/gpt2-xl" if is_xl else "gpt2",
-            # model_name_or_path="MBZUAI/LaMini-GPT-124M",
-            from_pt=True,
+        model_config=MicrlhfModelConfig(
+            tokenizer_path="microsoft/Phi-3-mini-4k-instruct",
+            gguf_path="weights/phi-3-16.gguf",
+
             layer=layer,
             max_seq_len=max_seq_len,
-            add_prefix="<|endoftext|>",
-            concat_all=False,
-            
-            cache_n=25 if not train_on_lamini else 0,
-            return_real_mask=True,
         ),
         dataset_config=IterableDatasetConfig(
-            dataset_name="Skylion007/openwebtext" if not train_on_lamini else "nev/lamini-dataset-text",
+            dataset_name="nev/openhermes-2.5-phi-format-text",
         ),
         loss_batch_size=16,
-        eval_loss_every=900_000,  # loss evaluation takes too long for GPT-2 (flax)
-        buffer_dtype=jnp.float32,
+        eval_loss_every=900_000,
+        buffer_dtype=jnp.float16,
         use_devices=n_devices,
         mp_devices=mp_devices,
     )
