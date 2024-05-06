@@ -30,7 +30,7 @@ class MicrlhfModel(object):
     def __init__(self, config: MicrlhfModelConfig):
         self.config = config
         self._tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_path)
-        self._llama = LlamaTransformer.from_pretrained(config.gguf_path)
+        self._llama = LlamaTransformer.from_pretrained(config.gguf_path, device_map=config.device_map)
         self.mesh = self._llama.mesh
         tag = f"residual-{config.layer}"
         self._llama_residuals = pz.de.CollectingSideOutputs.handling(

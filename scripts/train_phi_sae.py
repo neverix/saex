@@ -11,11 +11,11 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
 def main(
     n_devices: int = len(jax.devices()),
     mp_devices: int = 1,
-    cache_size = 2**14,
-    cache_batch_size = 10,
+    cache_size = 2**11,
+    cache_batch_size = 16,
     batch_size = 1024,
-    max_seq_len = 128,
-    sparsity_coefficient=1e-5,
+    max_seq_len = 64,
+    sparsity_coefficient=5e-6,
     save_steps=0,
     restore = False,
     wandb_entity = "neverix",
@@ -36,7 +36,7 @@ def main(
         use_wandb=(wandb_entity, "saex") if wandb_entity else None,
         log_every=10,
         hist_every=100,
-        save_path="",
+        save_path=f"weights/phi-l{layer}.safetensors",
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
@@ -71,6 +71,7 @@ def main(
         model_config=MicrlhfModelConfig(
             tokenizer_path="microsoft/Phi-3-mini-4k-instruct",
             gguf_path="weights/phi-3-16.gguf",
+            device_map="auto" if n_devices > 1 else "tpu:0",
 
             layer=layer,
             max_seq_len=max_seq_len,
@@ -80,7 +81,7 @@ def main(
         ),
         loss_batch_size=16,
         eval_loss_every=900_000,
-        buffer_dtype=jnp.float16,
+        buffer_dtype=jnp.bfloat16,
         use_devices=n_devices,
         mp_devices=mp_devices,
     )
