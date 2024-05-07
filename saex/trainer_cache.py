@@ -82,8 +82,8 @@ class BufferTrainer(object):
         self.model = model
         self.mesh = mesh
 
-        if self.config.buffer_max_samples < self.config.sae_config.batch_size:
-            print("Skipping buffer creation because buffer_max_samples < sae_config.batch_size")
+        if self.config.cache_acc == 0:
+            print("Skipping buffer creation because there's no cache accumulation")
             self.buffer = None
         else:
             print("Creating buffer...")
@@ -134,7 +134,7 @@ class BufferTrainer(object):
         
         dataset_iterator = iter(self.create_dataset())
         
-        is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in "f"
+        is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in ("f", "V")
         sae_params, sae_static = eqx.partition(self.sae, is_trainable)
         key = utils.get_key()
         
@@ -229,7 +229,7 @@ class BufferTrainer(object):
                             if mask is None:
                                 mask = jnp.ones(raw_tokens.shape[0], dtype=jnp.bool)
                             n_tokens = mask.sum()
-                            self.buffer_state = self.buffer(activations, mask, self.buffer_state)
+                            self.buffer_state = self.buffer(raw_tokens, mask, self.buffer_state)
 
                         accumulated += n_tokens
                         tokens_processed += n_tokens
@@ -247,14 +247,15 @@ class BufferTrainer(object):
                     # self.buffer_state, batch = self.buffer.sample_batch(
                     #     self.buffer_state, self.config.sae_config.batch_size, subkey)
                     subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
-                    subkeys = eqx.filter_shard(subkeys.reshape(self.mesh.shape["dp"], -1, subkeys.shape[-1]),
-                                               jshard.NamedSharding(self.mesh, P("dp", None, None)))
+                    subkeys = jax.device_put(subkeys.reshape(self.mesh.shape["dp"], -1, subkeys.shape[-1]),
+                                             jshard.NamedSharding(self.mesh, P("dp", None, None)))
                     self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
                                                         in_axes=(None, 1), out_axes=(None, 1))(
                                                             self.buffer_state, subkeys)
                     batch = batch.reshape(-1, batch.shape[-1])
+                    print(self.buffer_state.get(self.buffer._index))
                 
-                batch = eqx.filter_shard(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
+                batch = jax.device_put(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
                 
                 key, subkey = jax.random.split(key)
                 sae_params, self.sae_state, opt_state, stats = train_step(

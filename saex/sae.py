@@ -48,8 +48,8 @@ class SAEConfig:
     resample_type: Literal["boom", "sample_inputs"] = "sample_inputs"
     
     sparsity_tracking_epsilon: float = 0.05
-    
     use_model_parallel: bool = True
+    param_dtype: str = "float32"
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -60,6 +60,7 @@ class SAEOutput(NamedTuple):
 class SAE(eqx.Module):
     config: SAEConfig
     d_hidden: int
+    
     b_enc: jax.Array
     
     W_enc: jax.Array
@@ -72,7 +73,7 @@ class SAE(eqx.Module):
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
 
-    def __init__(self, config, mesh: jshard.Mesh, key=None):
+    def __init__(self, config, mesh: jshard.Mesh, key=None):        
         if key is None:
             key = utils.get_key()
         key, w_enc_subkey, w_dec_subkey = jax.random.split(key, 3)
@@ -84,23 +85,32 @@ class SAE(eqx.Module):
         state_sharding = {k: jshard.NamedSharding(mesh, v) for k, v in state_spec.items()}
         
         if config.encoder_init_method == "kaiming":
-            self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
+            self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey,
+                                                               (config.n_dimensions, self.d_hidden),
+                                                               dtype=self.param_dtype)
         elif config.encoder_init_method == "orthogonal":
-            self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey, (config.n_dimensions, self.d_hidden))
+            self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey,
+                                                          (config.n_dimensions, self.d_hidden),
+                                                          dtype=self.param_dtype)
         else:
             raise ValueError(f"Unknown encoder init method: \"{config.encoder_init_method}\"")
         self.W_enc = jax.device_put(self.W_enc, sharding["W_enc"])
         
-        self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean, device= sharding["b_enc"])
-        self.s = jnp.ones((self.d_hidden,), device=sharding["s"])
-        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"])
+        self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean,
+                              device=sharding["b_enc"], dtype=self.param_dtype)
+        self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=self.param_dtype)
+        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.param_dtype)
 
         if config.decoder_init_method == "kaiming":
-            self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
+            self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey,
+                                                               (self.d_hidden, config.n_dimensions),
+                                                               dtype=self.param_dtype)
             self.W_dec = jax.device_put(self.W_dec, sharding["W_dec"])
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "orthogonal":
-            self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey, (self.d_hidden, config.n_dimensions))
+            self.W_dec = jax.nn.initializers.orthogonal()(w_dec_subkey,
+                                                          (self.d_hidden, config.n_dimensions),
+                                                          dtype=self.param_dtype)
             self.W_dec = jax.device_put(self.W_dec, sharding["W_dec"])
             self.W_dec = self.normalize_w_dec(self.W_dec)
         elif config.decoder_init_method == "pseudoinverse":
@@ -130,6 +140,9 @@ class SAE(eqx.Module):
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
                                                   device=state_sharding["avg_l0"]))
     
+    @property
+    def param_dtype(self):
+        return getattr(jnp, self.config.param_dtype)
 
     def encode(self, activations: jax.Array):
         inputs = activations
@@ -309,7 +322,9 @@ class SAE(eqx.Module):
             dead = state.get(self.time_since_fired) > self.config.dead_after
             if self.config.resample_type == "boom":
                 W_enc = jnp.where(dead[None, :],
-                                jax.nn.initializers.orthogonal()(utils.get_key(), updated.W_enc.shape),
+                                jax.nn.initializers.orthogonal()(utils.get_key(),
+                                                                 updated.W_enc.shape,
+                                                                 dtype=self.param_dtype),
                                 updated.W_enc)
                 b_enc = jnp.where(dead, self.config.encoder_bias_init_mean, updated.b_enc)
                 W_dec = jnp.where(dead[:, None],
@@ -318,7 +333,8 @@ class SAE(eqx.Module):
             elif self.config.resample_type == "sample_inputs":
                 # https://github.com/saprmarks/dictionary_learning/blob/main/training.py#L105
                 alive_norm = jnp.linalg.norm(updated.W_enc * (~dead[None, :]), axis=-1).mean()
-                sampled_vecs = jax.random.choice(key, last_input, (self.d_hidden,), replace=True, axis=0)
+                sampled_vecs = jax.random.choice(key, last_input,
+                                                 (self.d_hidden,), replace=True, axis=0).astype(self.param_dtype)
                 norm_vecs = sampled_vecs / jnp.linalg.norm(sampled_vecs, axis=-1, keepdims=True)
                 W_enc = jnp.where(dead[None, :],
                                   (sampled_vecs * alive_norm * 0.2).T,
@@ -416,14 +432,14 @@ class SAE(eqx.Module):
 
     def restore(self, weights_path: os.PathLike):
         with safetensors.safe_open(weights_path, "flax") as f:
-            self = eqx.tree_at(lambda s: s.W_enc, self, f.get_tensor("W_enc"))
-            self = eqx.tree_at(lambda s: s.b_enc, self, f.get_tensor("b_enc"))
+            self = eqx.tree_at(lambda s: s.W_enc, self, f.get_tensor("W_enc").astype(self.param_dtype))
+            self = eqx.tree_at(lambda s: s.b_enc, self, f.get_tensor("b_enc").astype(self.param_dtype))
             try:
-                self = eqx.tree_at(lambda s: s.s, self, f.get_tensor("scaling_factor"))
+                self = eqx.tree_at(lambda s: s.s, self, f.get_tensor("scaling_factor").astype(self.param_dtype))
             except safetensors.SafetensorError:
                 pass
-            self = eqx.tree_at(lambda s: s.W_dec, self, f.get_tensor("W_dec"))
-            self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec"))
+            self = eqx.tree_at(lambda s: s.W_dec, self, f.get_tensor("W_dec").astype(self.param_dtype))
+            self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec").astype(self.param_dtype))
         return self
 
     def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float16):

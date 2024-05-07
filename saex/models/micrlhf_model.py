@@ -44,7 +44,7 @@ class MicrlhfModel(object):
 
     def __call__(self, texts: List[str]):
         tokens = self.encode_texts(texts)
-        token_array = pz.nx.wrap(jnp.asarray(tokens["input_ids"]).reshape((1, -1)), "batch", "seq").untag("batch").repeat(512).tag("batch")
+        token_array = pz.nx.wrap(jnp.asarray(tokens["input_ids"]).reshape((1, -1)), "batch", "seq")
         inputs = self._llama.inputs.from_basic_segments(token_array)
         hidden_states = self._llama_residuals_call(self._llama_residuals, inputs)
         hidden_states = hidden_states.untag("batch", "seq", "embedding").data_array

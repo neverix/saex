@@ -9,12 +9,12 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
 
 
 def main(
-    n_devices: int = len(jax.devices()),
+    n_devices: int = 1,
     mp_devices: int = 1,
-    cache_size = 2**11,
-    cache_batch_size = 16,
+    cache_size = 2**14,
+    cache_batch_size = 32,
     batch_size = 1024,
-    max_seq_len = 64,
+    max_seq_len = 256,
     sparsity_coefficient=5e-6,
     save_steps=0,
     restore = False,

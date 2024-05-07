@@ -57,9 +57,8 @@ class ActivationBuffer(eqx.Module):
         new_index = (index + accumulated) % self.max_samples
         # completely unintentional variable naming
         # ...essentially pmap.
-        new_cache = jax.vmap(lambda c, i, a, m: c.at[i].add((a * m[..., None]).astype(cache.dtype)),
+        new_cache = jax.vmap(lambda c, i, a, m: c.at[i].set(0).at[i].add((a * m[..., None]).astype(cache.dtype)),
                              in_axes=(0, 0, 0, 0))(cache, indices, activations, mask)
-        # new_cache = cache.at[:, indices].set(activations.astype(cache.dtype))
         
         new_cache = jax.lax.with_sharding_constraint(new_cache, self.cache_sharding)
         new_n_valid = jax.lax.with_sharding_constraint(new_n_valid, self.stat_sharding)
