@@ -253,7 +253,6 @@ class BufferTrainer(object):
                                                         in_axes=(None, 1), out_axes=(None, 1))(
                                                             self.buffer_state, subkeys)
                     batch = batch.reshape(-1, batch.shape[-1])
-                    print(self.buffer_state.get(self.buffer._index))
                 
                 batch = jax.device_put(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
                 

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Dict, Literal, NamedTuple, Tuple, Union
+from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
 import equinox as eqx
 import jax
@@ -35,6 +35,8 @@ class SAEConfig:
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
+    is_gated: bool = False
+    
     sparsity_loss_type: Union[Literal["l1", "l1_sqrt", "tanh", "hoyer", "recip"]] = "l1"
     recip_schedule: Tuple[Tuple[int, float]] = ((10_000, 0.2), (20_000, 0.1), (100_000, 0.05))
     reconstruction_loss_type: Literal[None, "mse", "mse_batchnorm", "l1"] = "mse"
@@ -65,6 +67,8 @@ class SAE(eqx.Module):
     
     W_enc: jax.Array
     s: jax.Array
+    s_gate: jax.Array
+    b_gate: jax.Array
     W_dec: jax.Array
     b_dec: jax.Array
     
@@ -99,6 +103,8 @@ class SAE(eqx.Module):
         self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean,
                               device=sharding["b_enc"], dtype=self.param_dtype)
         self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=self.param_dtype)
+        self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=self.param_dtype)
+        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=self.param_dtype)
         self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.param_dtype)
 
         if config.decoder_init_method == "kaiming":
@@ -143,6 +149,10 @@ class SAE(eqx.Module):
     @property
     def param_dtype(self):
         return getattr(jnp, self.config.param_dtype)
+    
+    @property
+    def is_gated(self):
+        return self.config.is_gated
 
     def encode(self, activations: jax.Array):
         inputs = activations
@@ -152,23 +162,25 @@ class SAE(eqx.Module):
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         post_relu = jax.nn.relu(pre_relu)
-        return pre_relu, post_relu
+        hidden = post_relu * self.s
+        if self.config.is_gated:
+            hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_enc)
+        return pre_relu, hidden
 
     def forward(self, activations: jax.Array):
         _, post_relu = self.encode(activations)
-        hidden = post_relu * self.s
+        hidden = post_relu
         out = hidden @ self.W_dec + self.b_dec
         return out
 
     def __call__(self, activations: jax.Array, state=None):
-        pre_relu, post_relu = self.encode(activations)
+        pre_relu, hidden = self.encode(activations)
         active = pre_relu > 0
         if state is not None:
             state = state.set(self.time_since_fired,
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
             state = state.set(self.num_steps, state.get(self.num_steps) + 1)
-        sparsity_loss = self.sparsity_loss(post_relu, state=state)
-        hidden = post_relu * self.s
+        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state)
         out = hidden @ self.W_dec + self.b_dec
         reconstruction_loss = self.reconstruction_loss(out, activations)
         if state is not None:
@@ -180,6 +192,11 @@ class SAE(eqx.Module):
                                 + state.get(self.avg_l0) * (1 - self.config.sparsity_tracking_epsilon))
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
+        if self.is_gated:
+            g_out = jax.nn.relu(pre_relu) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
+            gated_loss = self.reconstruction_loss(g_out, activations)
+            losses = {**losses, "gated": gated_loss}
+            loss = loss + gated_loss.mean()
         if state is not None:  # we can only tell if a neuron is dead if we know if it was alive in the first place
             death_loss = self.compute_death_loss(state, activations, out, pre_relu)
             losses = {**losses, "death": death_loss}
@@ -188,7 +205,7 @@ class SAE(eqx.Module):
             output=out,
             loss=loss,
             losses=losses,
-            activations={"pre_relu": pre_relu, "post_relu": post_relu, "hidden": hidden},
+            activations={"pre_relu": pre_relu, "hidden": hidden},
         )
         if state is None:
             return output 
@@ -263,7 +280,10 @@ class SAE(eqx.Module):
             # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu)) * self.s
             post_exp = jax.nn.softplus(pre_relu) * self.s
             post_exp = jnp.where(dead, post_exp, 0)
-            ghost_recon = post_exp @ self.W_dec
+            if self.is_gated:
+                post_exp = post_exp * jax.nn.softplus(self.s_gate)
+            # ghost_recon = post_exp @ self.W_dec
+            ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
             
             residual = jax.lax.stop_gradient(activations - reconstructions)
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1, keepdims=True)
@@ -409,6 +429,8 @@ class SAE(eqx.Module):
                 "s": P(None),
                 "W_dec": P(None, None),
                 "b_dec": P(None),
+                "s_gate": P(None),
+                "b_gate": P(None)
             }, {
                 "time_since_fired": P(None),
                 "num_steps": P(),
@@ -422,6 +444,8 @@ class SAE(eqx.Module):
                 "s": P("mp"),
                 "W_dec": P("mp", None),
                 "b_dec": P(None),
+                "s_gate": P("mp"),
+                "b_gate": P("mp")
             }, {
                 "time_since_fired": P("mp"),
                 "num_steps": P(),
@@ -450,6 +474,8 @@ class SAE(eqx.Module):
             "scaling_factor": self.s,
             "W_dec": self.W_dec,
             "b_dec": self.b_dec,
+            "s_gate": self.s_gate,
+            "b_gate": self.b_gate
         }
         state_dict = {k: v.astype(save_dtype) for k, v in state_dict.items()}
         save_file(state_dict, weights_path)
