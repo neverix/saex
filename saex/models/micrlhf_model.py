@@ -17,7 +17,7 @@ class MicrlhfModelConfig:
     gguf_path: os.PathLike
     layer: int
     max_seq_len: int = 512
-    device_map: str = "auto"
+    device_map: str = "auto:mp=2"
 
     @property
     def model_class(self) -> type:

@@ -164,6 +164,7 @@ class SAE(eqx.Module):
         post_relu = jax.nn.relu(pre_relu)
         hidden = post_relu * self.s
         if self.config.is_gated:
+            # hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_enc)
             hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_enc)
         return pre_relu, hidden
 
