@@ -8,12 +8,12 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
 
 
 def main(
-    n_devices: int = 1,  # len(jax.devices()),
+    n_devices: int = len(jax.devices()),
     mp_devices: int = 1,
     cache_size = 2**19,
     cache_batch_size = 128,
     batch_size = 1024,
-    max_seq_len = 128,
+    max_seq_len = 1024,
     sparsity_coefficient=1e-4,
     save_steps=1000,
     layer = 1,
@@ -22,7 +22,7 @@ def main(
     train_on_lamini = False,
     wandb_entity = "neverix",
 ):
-    n_features = 768
+    n_features = 768 if not is_xl else 1600
 
     config = BufferTrainerConfig(
         n_dimensions=n_features,
