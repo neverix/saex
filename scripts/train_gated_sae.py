@@ -81,7 +81,7 @@ def main(
             add_prefix="<|endoftext|>",
             concat_all=False,
             
-            cache_n=25 if not train_on_lamini else 0,
+            cache_n=25 if train_on_lamini else 0,
             return_real_mask=True,
         ),
         dataset_config=IterableDatasetConfig(
@@ -89,7 +89,7 @@ def main(
         ),
         loss_batch_size=16,
         eval_loss_every=900_000,  # loss evaluation takes too long for GPT-2 (flax)
-        buffer_dtype=jnp.float32,
+        buffer_dtype=jnp.float16,
         use_devices=n_devices,
         mp_devices=mp_devices,
     )

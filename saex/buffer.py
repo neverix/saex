@@ -37,7 +37,7 @@ class ActivationBuffer(eqx.Module):
         self.devices = devices
         self.mesh = mesh
 
-    @partial(eqx.filter_jit, donate="all-except-first")
+    @partial(eqx.filter_jit, donate="all")
     def __call__(self, activations, mask, state):
         cache, n_valid, index = state.get(self._cache), state.get(self._n_valid), state.get(self._index)
         cache = jax.lax.with_sharding_constraint(cache, self.cache_sharding)
@@ -67,9 +67,9 @@ class ActivationBuffer(eqx.Module):
         return (state
                 .set(self._cache, new_cache)
                 .set(self._n_valid, new_n_valid)
-                .set(self._index, new_index))
+                .set(self._index, new_index), mask.sum())
 
-    @partial(eqx.filter_jit, donate="first")
+    @partial(eqx.filter_jit, donate="all")
     def sample_batch(self, state, key):
         cache, n_valid = state.get(self._cache), state.get(self._n_valid)
         index = jax.vmap(lambda k, nv: jax.random.randint(k, (1,), 0, nv), in_axes=(0, 0))(key, n_valid)[:, :, None]

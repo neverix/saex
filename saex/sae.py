@@ -194,7 +194,7 @@ class SAE(eqx.Module):
         loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if self.is_gated:
-            g_out = jax.nn.relu(pre_relu) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
+            g_out = (jax.nn.relu(pre_relu) * jax.lax.stop_gradient(self.s)) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
             gated_loss = self.reconstruction_loss(g_out, activations)
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()

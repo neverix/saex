@@ -193,18 +193,7 @@ class BufferTrainer(object):
             opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             return sae_params, sae_state, opt_state, stats
 
-        @partial(jax.jit, donate_argnums=(0,))
-        def update_buffer(mid_buffer, activations, mask, accumulated):
-            n_tokens = mask.sum()
-            raw_tokens = activations.reshape(-1, activations.shape[-1]).astype(mid_buffer.dtype)
-            mask = mask.flatten()
-            indices = jnp.nonzero(mask, size=mask.size, fill_value=mask.size)
-            update = raw_tokens[indices]
-            update = jnp.where(mask[indices][:, None],
-                                update,
-                                jax.lax.dynamic_slice(raw_tokens, (accumulated, 0), (mask.size, raw_tokens.shape[-1])))
-            mid_buffer = jax.lax.dynamic_update_slice(mid_buffer, update, (accumulated, 0))
-            return mid_buffer, n_tokens
+        sampler = jax.jit(jax.vmap(self.buffer.sample_batch, in_axes=(None, 1), out_axes=(None, 1)), donate_argnums=(0,))
 
         bar = trange(self.config.train_iterations + self.config.dry_run_steps)
         tokens_processed = 0
@@ -220,16 +209,15 @@ class BufferTrainer(object):
                         for _ in range(self.config.cache_batch_size):
                             texts.append(next(dataset_iterator))
                         activations, model_misc = self.model(texts)
-                        raw_tokens = activations.reshape(-1, activations.shape[-1])
                         mask = model_misc.get("mask")
                         if self.buffer is None:
                             assert mask is None
-                            n_tokens = raw_tokens.shape[0]
+                            n_tokens = np.prod(activations.shape[:-1])
                         else:
                             if mask is None:
-                                mask = jnp.ones(raw_tokens.shape[0], dtype=jnp.bool)
-                            n_tokens = mask.sum()
-                            self.buffer_state = self.buffer(raw_tokens, mask, self.buffer_state)
+                                mask = jnp.ones(np.prod(activations.shape[:-1]), dtype=jnp.bool,
+                                                device=jshard.NamedSharding(self.mesh, P("dp")))
+                            self.buffer_state, n_tokens = self.buffer(activations, mask, self.buffer_state)
 
                         accumulated += n_tokens
                         tokens_processed += n_tokens
@@ -241,20 +229,14 @@ class BufferTrainer(object):
 
                 # train SAE
                 if self.buffer is None:
-                    batch = raw_tokens
+                    batch = activations.reshape(-1, activations.shape[-1])
                 else:
                     key, subkey = jax.random.split(key, 2)
-                    # self.buffer_state, batch = self.buffer.sample_batch(
-                    #     self.buffer_state, self.config.sae_config.batch_size, subkey)
                     subkeys = jax.random.split(subkey, self.config.sae_config.batch_size)
                     subkeys = jax.device_put(subkeys.reshape(self.mesh.shape["dp"], -1, subkeys.shape[-1]),
-                                             jshard.NamedSharding(self.mesh, P("dp", None, None)))
-                    self.buffer_state, batch = jax.vmap(self.buffer.sample_batch,
-                                                        in_axes=(None, 1), out_axes=(None, 1))(
-                                                            self.buffer_state, subkeys)
+                                            jshard.NamedSharding(self.mesh, P("dp", None, None)))
+                    self.buffer_state, batch = sampler(self.buffer_state, subkeys)
                     batch = batch.reshape(-1, batch.shape[-1])
-                
-                batch = jax.device_put(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
                 
                 key, subkey = jax.random.split(key)
                 sae_params, self.sae_state, opt_state, stats = train_step(
@@ -262,10 +244,11 @@ class BufferTrainer(object):
                     iteration, subkey)
                 stats["tokens_processed"] = tokens_processed
 
-                bar.set_postfix(stats)
-                
+                if iteration % self.config.log_every == 0:
+                    bar.set_postfix(stats)
                 if self.config.use_wandb:
                     if iteration % self.config.log_every == 0:
+                        bar.set_postfix(stats)
                         run.log(stats, step=iteration)
                     if iteration % self.config.hist_every == self.config.hist_every - 1:
                         # look at this graph

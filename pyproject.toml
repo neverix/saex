@@ -27,6 +27,8 @@ jax-smi = {git = "https://github.com/neverix/jax-smi.git", rev="eb75686f31258a4c
 oryx = "^0.2.6"
 fire = "^0.6.0"
 micrlhf-progress = {git = "https://github.com/neverix/micrlhf-progress.git"}
+tensorflow = "^2.16.1"
+tensorboard-plugin-profile = "^2.15.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1"
@@ -50,6 +52,7 @@ astor = "^0.8.1"
 plotly = "^5.21.0"
 ipympl = "^0.9.4"
 nbformat = "^5.10.4"
+line-profiler = "^4.1.3"
 
 [tool.flake8]
 max-line-length = 120

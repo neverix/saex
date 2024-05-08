@@ -11,7 +11,7 @@ def main(
     n_devices: int = len(jax.devices()),
     mp_devices: int = 1,
     cache_size = 2**19,
-    cache_batch_size = 128,
+    cache_batch_size = 256,
     batch_size = 1024,
     max_seq_len = 1024,
     sparsity_coefficient=5e-5,
@@ -79,7 +79,7 @@ def main(
             add_prefix="<|endoftext|>",
             concat_all=False,
             
-            cache_n=25 if not train_on_lamini else 0,
+            cache_n=25 if train_on_lamini else 0,
             return_real_mask=True,
         ),
         dataset_config=IterableDatasetConfig(

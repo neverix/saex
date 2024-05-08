@@ -98,7 +98,7 @@ class TransformersModel(object):
             text = "".join(texts)
             token = self._tokenizer.encode(
                 text,
-                return_tensors="jax", truncation=None)[0]
+                return_tensors="np", truncation=None)[0]
             # token = token[:len(token) - (len(token) % self.config.max_seq_len)]
             token = token[:len(texts) * self.config.max_seq_len]
             tokens = token.reshape(-1, self.config.max_seq_len)
@@ -106,7 +106,7 @@ class TransformersModel(object):
         else:
             tokens = self._tokenizer.batch_encode_plus(
                 texts,
-                return_tensors="jax", padding="max_length",
+                return_tensors="np", padding="max_length",
                 truncation=True, max_length=self.config.max_seq_len)
         if self.config.cache_n > 0 and self._cache[0] is not None:
             tokens = {k: v[:, self.config.cache_n:] for k, v in tokens.items()}
