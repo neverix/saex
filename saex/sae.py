@@ -164,8 +164,8 @@ class SAE(eqx.Module):
         post_relu = jax.nn.relu(pre_relu)
         hidden = post_relu * self.s
         if self.config.is_gated:
-            # hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_enc)
-            hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_enc)
+            # hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate
+            hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
         return pre_relu, hidden
 
     def forward(self, activations: jax.Array):
@@ -277,12 +277,14 @@ class SAE(eqx.Module):
             return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
             dead = state.get(self.time_since_fired) > self.config.dead_after
+            if self.is_gated:
+                reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
             # post_exp = jnp.exp(pre_relu) * self.s
             # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu)) * self.s
             post_exp = jax.nn.softplus(pre_relu) * self.s
+            # if self.is_gated:
+                # post_exp = post_exp * jax.lax.stop_gradient(jax.nn.softplus(self.s_gate))
             post_exp = jnp.where(dead, post_exp, 0)
-            if self.is_gated:
-                post_exp = post_exp * jax.nn.softplus(self.s_gate)
             # ghost_recon = post_exp @ self.W_dec
             ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
             
