@@ -1,12 +1,13 @@
 from functools import partial
 from typing import List
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
 from jax.sharding import PartitionSpec as P
+
+import equinox as eqx
 from safetensors import safe_open
 from safetensors.flax import save_file
 

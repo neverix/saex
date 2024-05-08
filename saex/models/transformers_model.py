@@ -4,11 +4,12 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
+
+import equinox as eqx
 import transformers
 from oryx.core import plant, sow
 

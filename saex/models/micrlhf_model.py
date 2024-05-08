@@ -2,10 +2,11 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import List
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
+
+import equinox as eqx
 from micrlhf.llama import LlamaBlock, LlamaTransformer
 from penzai import pz
 from penzai.toolshed import jit_wrapper
@@ -41,7 +42,7 @@ class MicrlhfModel(object):
             .insert_before(pz.de.TellIntermediate.from_config(tag=tag)),
         )
         self._llama_residuals_call = jax.jit(lambda lr, inputs: lr(inputs))
-        self._llama_replace = pz.de.WithSideInputsFromInputTuple.handling(
+        self._llama_replace = (
             self._llama.select()
             .at_instances_of(LlamaBlock)
             .apply_with_selected_index(
@@ -53,13 +54,20 @@ class MicrlhfModel(object):
         )
         self._llama_replace_call = jax.jit(
             (lambda sae_s, sae_d, inputs, lr, hiddens:
-                lr(replace(inputs, tokens=eqx.combine(sae_s, sae_d).forward(hiddens)))),
+                lr(replace(inputs, tokens=
+                           pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding")))),
             static_argnums=0)
+        @jax.jit
+        def loss_fn(logits, inputs, masks):
+            logits = pz.nx.nmap(lambda l, i, m: jnp.take_along_axis(jax.nn.log_softmax(l[:-1], -1), i[1:, None], 1)[:, 0] * m[1:]
+                                )(logits.untag("seq", "vocabulary"), inputs.tokens.untag("seq"), masks.untag("seq"))
+            return -logits.data_array.mean()
+        self.loss_fn = loss_fn
         self.sharding = jshard.NamedSharding(self.mesh, jshard.PartitionSpec("dp", None))
 
     def __call__(self, texts: List[str]):
         inputs, mask = self.encode_texts(texts)
-        hidden_states = self._llama_residuals_call(self._llama_residuals, inputs)
+        hidden_states = self._llama_residuals_call(self._llama_residuals, inputs)[1][0].value
         hidden_states = hidden_states.untag("batch", "seq", "embedding").data_array
 
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
@@ -67,20 +75,16 @@ class MicrlhfModel(object):
     def eval_loss(self, texts, autoencoder):
         inputs, mask = self.encode_texts(texts)
         logits, (hidden_states,) = self._llama_residuals_call(self._llama_residuals, inputs)
-        hidden_states = hidden_states.value
-        assert (self.config.cache_n == 0) or (self._cache[0] is not None)
+        hidden_states = hidden_states.value.untag("batch", "seq", "embedding").data_array
         sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
         logits_reconstructed = self._llama_replace_call(
-            sae_static, sae_params, self._llama_replace, inputs, self._llama_replace, hidden_states)
+            sae_static, sae_params, inputs, self._llama_replace, hidden_states)
 
-        loss = self.loss_fn(logits, inputs)
-        loss_reconstructed = self.loss_fn(logits_reconstructed, inputs)
+        mask = pz.nx.wrap(mask.reshape(inputs.tokens.data_array.shape), *inputs.tokens.named_axes.keys())
+        loss = self.loss_fn(logits, inputs, mask)
+        loss_reconstructed = self.loss_fn(logits_reconstructed, inputs, mask)
 
         return loss, loss_reconstructed
-
-    def loss_fn(logits, inputs):
-        logits = pz.nx.nmap(lambda l, i: jnp.take_along_axis(jax.nn.log_softmax(l[:-1]), 1, i[1:]))(logits.untag("seq", "vocab"), inputs.tokens.untag("seq"))
-        return logits.data_array.mean()
 
     def encode_texts(self, texts: List[str]):
         tokens = self._tokenizer.batch_encode_plus(

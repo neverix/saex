@@ -3,17 +3,17 @@ from dataclasses import dataclass, is_dataclass
 from functools import partial
 from typing import Optional, Tuple
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
-import jax_smi
 import numpy as np
-import optax
 from jax.sharding import PartitionSpec as P
-from tqdm.auto import trange
 
+import equinox as eqx
+import jax_smi
+import optax
 import wandb
+from tqdm.auto import trange
 
 from . import utils
 from .buffer import ActivationBuffer
@@ -276,4 +276,3 @@ class BufferTrainer(object):
             if save_buffer.lower() in ("y", "yes"):
                 self.buffer.save(self.buffer_state, self.config.save_buffer)
         run.finish()
-

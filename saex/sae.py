@@ -2,14 +2,15 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
-import safetensors
 from jax.experimental.checkify import checkify
 from jax.sharding import PartitionSpec as P
+
+import equinox as eqx
+import safetensors
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
 
@@ -44,7 +45,7 @@ class SAEConfig:
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
     scale_ghost_by_death: bool = True
     dead_after: int = 50
-    death_penalty_threshold: float = 1e-5
+    death_penalty_threshold: Optional[float] = None
     death_penalty_coefficient: float = 1.0
     resample_every: int = 1e10
     resample_type: Literal["boom", "sample_inputs"] = "sample_inputs"
@@ -243,7 +244,7 @@ class SAE(eqx.Module):
         else:
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
     
-    def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-3):
+    def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-10):
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
@@ -256,7 +257,10 @@ class SAE(eqx.Module):
             # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - (log_sparsity + offset)).sum(-1)
             return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
         elif self.config.death_loss_type == "ghost_grads":
-            dead = state.get(self.time_since_fired) > self.config.dead_after
+            if self.config.death_penalty_threshold is None:
+                dead = state.get(self.time_since_fired) > self.config.dead_after
+            else:
+                dead = state.get(self.avg_l0) < self.config.death_penalty_threshold
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
             
@@ -422,7 +426,7 @@ class SAE(eqx.Module):
         )
     
     def get_log_sparsity(self, state: eqx.nn.State):
-        return np.log10(1e-8 + state.get(self.avg_l0))
+        return np.log10(1e-13 + state.get(self.avg_l0))
     
     def get_partition_spec(self):
         if not self.config.use_model_parallel:
