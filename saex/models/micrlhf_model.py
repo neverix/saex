@@ -61,7 +61,7 @@ class MicrlhfModel(object):
         def loss_fn(logits, inputs, masks):
             logits = pz.nx.nmap(lambda l, i, m: jnp.take_along_axis(jax.nn.log_softmax(l[:-1], -1), i[1:, None], 1)[:, 0] * m[1:]
                                 )(logits.untag("seq", "vocabulary"), inputs.tokens.untag("seq"), masks.untag("seq"))
-            return -logits.data_array.mean()
+            return -logits.data_array.mean() / masks.astype(jnp.float32).mean()
         self.loss_fn = loss_fn
         self.sharding = jshard.NamedSharding(self.mesh, jshard.PartitionSpec("dp", None))
 

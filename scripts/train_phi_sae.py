@@ -61,7 +61,7 @@ def main(
             dead_after=1_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.01,
-            is_gated=False
+            is_gated=True
         ),
         sae_restore=restore,
         cache_every_steps=int(cache_size / batch_size * cache_ratio),

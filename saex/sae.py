@@ -22,7 +22,8 @@ from .utils.geometric_median import geometric_median
 class SAEConfig:
     n_dimensions: int
     sparsity_coefficient: float
-    batch_size: int    
+    batch_size: int
+    buffer_size: int = 100
 
     expansion_factor: int = 80  # 32
     
@@ -64,6 +65,9 @@ class SAE(eqx.Module):
     config: SAEConfig
     d_hidden: int
     
+    sharding: Dict[str, jshard.NamedSharding]
+    state_sharding: Dict[str, jshard.NamedSharding]
+    
     b_enc: jax.Array
     
     W_enc: jax.Array
@@ -77,6 +81,7 @@ class SAE(eqx.Module):
     num_steps: eqx.nn.StateIndex
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
+    activated_buffer: eqx.nn.StateIndex
 
     def __init__(self, config, mesh: jshard.Mesh, key=None):        
         if key is None:
@@ -88,6 +93,8 @@ class SAE(eqx.Module):
         spec, state_spec = self.get_partition_spec()
         sharding = {k: jshard.NamedSharding(mesh, v) for k, v in spec.items()}
         state_sharding = {k: jshard.NamedSharding(mesh, v) for k, v in state_spec.items()}
+        self.sharding = sharding
+        self.state_sharding = state_sharding
         
         if config.encoder_init_method == "kaiming":
             self.W_enc = jax.nn.initializers.kaiming_uniform()(w_enc_subkey,
@@ -146,6 +153,8 @@ class SAE(eqx.Module):
                                                              device=state_sharding["avg_loss_sparsity"]))
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
                                                   device=state_sharding["avg_l0"]))
+        self.activated_buffer = eqx.nn.StateIndex(jnp.zeros((self.config.buffer_size, self.d_hidden),
+                                                            device=state_sharding["activated_buffer"]))
     
     @property
     def param_dtype(self):
@@ -165,8 +174,8 @@ class SAE(eqx.Module):
         post_relu = jax.nn.relu(pre_relu)
         hidden = post_relu * self.s
         if self.config.is_gated:
-            # hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate
-            hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
+            hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
+            # hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
         return pre_relu, hidden
 
     def forward(self, activations: jax.Array):
@@ -192,6 +201,10 @@ class SAE(eqx.Module):
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.sparsity_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.sparsity_tracking_epsilon))
+            buffer = state.get(self.activated_buffer)
+            buffer = jnp.roll(buffer, -1, 0)
+            buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
+            state = state.set(self.activated_buffer, buffer)
         loss = reconstruction_loss.mean() + (
             self.config.sparsity_coefficient * (1 if not self.is_gated else 2)
             ) * sparsity_loss.sum(-1).mean()
@@ -250,7 +263,7 @@ class SAE(eqx.Module):
         if self.config.death_penalty_threshold is None:
             dead = state.get(self.time_since_fired) > self.config.dead_after
         else:
-            dead = state.get(self.avg_l0) < self.config.death_penalty_threshold
+            dead = (state.get(self.activated_buffer).mean(0) < self.config.death_penalty_threshold) * (state.get(self.num_steps) > self.config.buffer_size)
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
@@ -259,9 +272,13 @@ class SAE(eqx.Module):
             sparsity = self.sparsity_loss(post_relu, state=state).mean(0)
             # log_sparsity = jnp.nan_to_num(jnp.log10(sparsity + eps))
             # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.avg_loss_sparsity) + eps) - log_sparsity)
-            offset = 0
+            offset = jax.lax.stop_gradient(state.get(self.activated_buffer).mean(0) - sparsity)
+            # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.activated_buffer).mean(0) + eps) - log_sparsity)
+            # offset = 0
+            return jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - jnp.log10(sparsity + offset + eps).sum(-1) * (state.get(self.num_steps) > self.config.buffer_size)
             # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - (log_sparsity + offset)).sum(-1)
-            return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
+            # return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1))
+            # return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
         elif self.config.death_loss_type == "ghost_grads":
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
@@ -282,17 +299,17 @@ class SAE(eqx.Module):
                 loss = loss * jnp.mean(dead.astype(jnp.float32))
             return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
-            # if self.is_gated:
-                # reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
+            if self.is_gated:
+                reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
             # post_exp = jnp.exp(pre_relu)
             # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu))
             post_exp = jax.nn.softplus(pre_relu)
             # post_exp = jnp.where(pre_relu > 0, pre_relu + 1, jnp.exp(pre_relu))
             # post_exp = post_exp * jax.lax.stop_gradient(self.s)
             post_exp = post_exp * self.s
-            if self.is_gated:
+            # if self.is_gated:
                 # post_exp = post_exp * jax.lax.stop_gradient(jax.nn.softplus(self.s_gate))
-                post_exp = post_exp * jax.nn.softplus(self.s_gate)
+                # post_exp = post_exp * jax.nn.softplus(self.s_gate)
             post_exp = jnp.where(dead, post_exp, 0)
             # ghost_recon = post_exp @ self.W_dec
             # ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
@@ -432,7 +449,8 @@ class SAE(eqx.Module):
         )
     
     def get_log_sparsity(self, state: eqx.nn.State):
-        return np.log10(1e-13 + state.get(self.avg_l0))
+        return np.log10(1e-13 + state.get(self.activated_buffer).mean(0))
+        # return np.log10(1e-13 + state.get(self.avg_l0))
     
     def get_partition_spec(self):
         if not self.config.use_model_parallel:
@@ -449,6 +467,7 @@ class SAE(eqx.Module):
                 "num_steps": P(),
                 "avg_loss_sparsity": P(None),
                 "avg_l0": P(None),
+                "activated_buffer": P(None, None)
             }
         else:
             spec, state_spec = {
@@ -464,19 +483,25 @@ class SAE(eqx.Module):
                 "num_steps": P(),
                 "avg_loss_sparsity": P("mp"),
                 "avg_l0": P("mp"),
+                "activated_buffer": P(None, "mp")
             }
         return spec, state_spec
 
     def restore(self, weights_path: os.PathLike):
         with safetensors.safe_open(weights_path, "flax") as f:
-            self = eqx.tree_at(lambda s: s.W_enc, self, f.get_tensor("W_enc").astype(self.param_dtype))
-            self = eqx.tree_at(lambda s: s.b_enc, self, f.get_tensor("b_enc").astype(self.param_dtype))
-            try:
-                self = eqx.tree_at(lambda s: s.s, self, f.get_tensor("scaling_factor").astype(self.param_dtype))
-            except safetensors.SafetensorError:
-                pass
-            self = eqx.tree_at(lambda s: s.W_dec, self, f.get_tensor("W_dec").astype(self.param_dtype))
-            self = eqx.tree_at(lambda s: s.b_dec, self, f.get_tensor("b_dec").astype(self.param_dtype))
+            for param in ("W_enc", "b_enc", "W_dec", "b_dec", "s", "s_gate", "b_gate"):
+                match param:
+                    case "s":
+                        load_param = "scaling_factor"
+                    case _:
+                        load_param = param
+                try:
+                    self = eqx.tree_at(lambda s: s.s_gate, self,
+                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype),
+                                                    self.sharding[param]))
+                except safetensors.SafetensorError:
+                    pass
+            print("Weights restored.")
         return self
 
     def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float16):
