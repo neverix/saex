@@ -192,7 +192,9 @@ class SAE(eqx.Module):
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.sparsity_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.sparsity_tracking_epsilon))
-        loss = reconstruction_loss.mean() + self.config.sparsity_coefficient * sparsity_loss.sum(-1).mean()
+        loss = reconstruction_loss.mean() + (
+            self.config.sparsity_coefficient * (1 if not self.is_gated else 2)
+            ) * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if self.is_gated:
             g_out = (jax.nn.relu(pre_relu) * jax.lax.stop_gradient(self.s)) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)

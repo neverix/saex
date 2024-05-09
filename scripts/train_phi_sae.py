@@ -13,14 +13,14 @@ def main(
     mp_devices: int = 1,
     cache_size = 2**14,
     cache_batch_size = 64,
-    cache_ratio=3.0,
+    cache_ratio=0.5,
     batch_size = 1024,
     max_seq_len = 128,
     sparsity_coefficient=5e-6,
     save_steps=1000,
     restore = False,
     wandb_entity = "neverix",
-    layer = 10,
+    layer = 20,
 ):
     n_features = 3072
 
@@ -61,7 +61,7 @@ def main(
             dead_after=1_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.01,
-            is_gated=True
+            is_gated=False
         ),
         sae_restore=restore,
         cache_every_steps=int(cache_size / batch_size * cache_ratio),
@@ -82,7 +82,7 @@ def main(
             dataset_name="nev/openhermes-2.5-phi-format-text",
         ),
         loss_batch_size=16,
-        eval_loss_every=100,
+        eval_loss_every=1_000,
         buffer_dtype=jnp.bfloat16,
         use_devices=n_devices,
         mp_devices=mp_devices,
