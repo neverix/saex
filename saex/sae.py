@@ -247,6 +247,10 @@ class SAE(eqx.Module):
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
     
     def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-10):
+        if self.config.death_penalty_threshold is None:
+            dead = state.get(self.time_since_fired) > self.config.dead_after
+        else:
+            dead = state.get(self.avg_l0) < self.config.death_penalty_threshold
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
@@ -259,10 +263,6 @@ class SAE(eqx.Module):
             # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - (log_sparsity + offset)).sum(-1)
             return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
         elif self.config.death_loss_type == "ghost_grads":
-            if self.config.death_penalty_threshold is None:
-                dead = state.get(self.time_since_fired) > self.config.dead_after
-            else:
-                dead = state.get(self.avg_l0) < self.config.death_penalty_threshold
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
             
@@ -282,17 +282,21 @@ class SAE(eqx.Module):
                 loss = loss * jnp.mean(dead.astype(jnp.float32))
             return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
-            dead = state.get(self.time_since_fired) > self.config.dead_after
-            if self.is_gated:
-                reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
-            # post_exp = jnp.exp(pre_relu) * self.s
-            # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu)) * self.s
-            post_exp = jax.nn.softplus(pre_relu) * self.s
             # if self.is_gated:
+                # reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
+            # post_exp = jnp.exp(pre_relu)
+            # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu))
+            post_exp = jax.nn.softplus(pre_relu)
+            # post_exp = jnp.where(pre_relu > 0, pre_relu + 1, jnp.exp(pre_relu))
+            # post_exp = post_exp * jax.lax.stop_gradient(self.s)
+            post_exp = post_exp * self.s
+            if self.is_gated:
                 # post_exp = post_exp * jax.lax.stop_gradient(jax.nn.softplus(self.s_gate))
+                post_exp = post_exp * jax.nn.softplus(self.s_gate)
             post_exp = jnp.where(dead, post_exp, 0)
             # ghost_recon = post_exp @ self.W_dec
-            ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
+            # ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
+            ghost_recon = post_exp @ self.W_dec
             
             residual = jax.lax.stop_gradient(activations - reconstructions)
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1, keepdims=True)
