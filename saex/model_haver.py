@@ -1,17 +1,23 @@
-from .sae import SAEConfig, SAE
-from .buffer import ActivationBuffer
-from .utils import utils
-import equinox as eqx
-import jax.sharding as jshard
-import jax
-import numpy as np
 from typing import Optional
-from .iterable_dataset import create_iterable_dataset, IterableDatasetConfig
+
+import jax
+import jax.sharding as jshard
+import numpy as np
+
+import equinox as eqx
+
+from .buffer import ActivationBuffer
+from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
+from .sae import SAE, SAEConfig
+from .utils import utils
 
 
 class ModelHaver(object):
-    def __init__(self, model_config, sae_config: SAEConfig, dataset_config: IterableDatasetConfig,
-                 sae: SAE = None, sae_restore: Optional[str] = None, use_devices=1, mp_devices=1):
+    def __init__(self, model_config,
+                 sae: SAE = None, sae_restore: Optional[str] = None, sae_config: Optional[SAEConfig] = None,
+                 dataset_config: Optional[IterableDatasetConfig] = None, create_dataset = None,
+                 model = None,
+                 use_devices=1, mp_devices=1):
         mesh = None
 
         if model is None:

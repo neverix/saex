@@ -20,6 +20,7 @@ from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .models.transformers_model import TransformersModelConfig
 from .sae import SAE, SAEConfig
+from .model_haver import ModelHaver
 
 
 @dataclass
@@ -64,24 +65,16 @@ class BufferTrainerConfig:
     mp_devices: int
 
 
-class BufferTrainer(object):
+class BufferTrainer(ModelHaver):
     def __init__(self, config: BufferTrainerConfig, sae=None, model=None, create_dataset=None):
+        super().__init__(model_config=config.model_config,
+                         model=model, create_dataset=create_dataset,
+                         dataset_config=config.dataset_config,
+                         sae_config=config.sae_config,
+                         sae=sae, sae_restore=config.sae_restore,
+                         use_devices=config.use_devices, mp_devices=config.mp_devices)
         self.config = config
-
-        mesh = None
-
-        if model is None:
-            print("Loading model...")
-            if config.model_config.model_class.has_mesh:
-                model = config.model_config.model_class(config.model_config)
-                mesh = model.mesh
-            else:
-                mesh = jshard.Mesh(np.array(jax.devices())[:config.use_devices].reshape(
-                    -1, config.mp_devices), axis_names=("dp", "mp"))
-                model = config.model_config.model_class(config.model_config, mesh=mesh)
-        self.model = model
-        self.mesh = mesh
-
+        
         if self.config.cache_acc == 0:
             print("Skipping buffer creation because there's no cache accumulation")
             self.buffer = None
@@ -94,22 +87,6 @@ class BufferTrainer(object):
                 print(f"Loading buffer ({config.restore_buffer})...")
                 self.buffer_state = self.buffer.restore(
                     self.buffer_state, config.restore_buffer)
-        if sae is not None:
-            self.sae, self.sae_state = utils.unstatify(sae)
-        else:
-            print("Creating SAE...")
-            self.sae, self.sae_state = eqx.nn.make_with_state(SAE)(config.sae_config, self.mesh)
-            if config.sae_restore:
-                print(f"Loading checkpoint ({config.sae_restore})...")
-                self.sae = self.sae.restore(config.sae_restore)
-            sharding = {k: jshard.NamedSharding(self.mesh, v) for k, v in self.sae.get_partition_spec()[0].items()}
-            sae_params, _ = eqx.partition(self.sae, lambda x: eqx.is_array(x))
-            self.sharding_sae = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), sae_params)
-        
-        if create_dataset is None:
-            print("Loading dataset...")
-            create_dataset = create_iterable_dataset(config.dataset_config)
-        self.create_dataset = create_dataset
 
     def train(self):
         print("Training for", self.config.train_iterations, "iterations")
