@@ -174,8 +174,8 @@ class SAE(eqx.Module):
         post_relu = jax.nn.relu(pre_relu)
         hidden = post_relu * self.s
         if self.config.is_gated:
-            hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
             # hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
+            hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
         return pre_relu, hidden
 
     def forward(self, activations: jax.Array):
@@ -186,18 +186,11 @@ class SAE(eqx.Module):
 
     def __call__(self, activations: jax.Array, state=None):
         pre_relu, hidden = self.encode(activations)
-        active = pre_relu > 0
+        active = hidden != 0
         if state is not None:
             state = state.set(self.time_since_fired,
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
             state = state.set(self.num_steps, state.get(self.num_steps) + 1)
-        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state)
-        out = hidden @ self.W_dec + self.b_dec
-        reconstruction_loss = self.reconstruction_loss(out, activations)
-        if state is not None:
-            state = state.set(self.avg_loss_sparsity,
-                                sparsity_loss.mean(0) * self.config.sparsity_tracking_epsilon
-                                + state.get(self.avg_loss_sparsity) * (1 - self.config.sparsity_tracking_epsilon))
             state = state.set(self.avg_l0,
                                 active.mean(0) * self.config.sparsity_tracking_epsilon
                                 + state.get(self.avg_l0) * (1 - self.config.sparsity_tracking_epsilon))
@@ -205,6 +198,13 @@ class SAE(eqx.Module):
             buffer = jnp.roll(buffer, -1, 0)
             buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
             state = state.set(self.activated_buffer, buffer)
+        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state)
+        out = hidden @ self.W_dec + self.b_dec
+        reconstruction_loss = self.reconstruction_loss(out, activations)
+        if state is not None:
+            state = state.set(self.avg_loss_sparsity,
+                                sparsity_loss.mean(0) * self.config.sparsity_tracking_epsilon
+                                + state.get(self.avg_loss_sparsity) * (1 - self.config.sparsity_tracking_epsilon))
         loss = reconstruction_loss.mean() + (
             self.config.sparsity_coefficient * (1 if not self.is_gated else 2)
             ) * sparsity_loss.sum(-1).mean()
@@ -260,10 +260,11 @@ class SAE(eqx.Module):
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
     
     def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-10):
-        if self.config.death_penalty_threshold is None:
-            dead = state.get(self.time_since_fired) > self.config.dead_after
-        else:
-            dead = (state.get(self.activated_buffer).mean(0) < self.config.death_penalty_threshold) * (state.get(self.num_steps) > self.config.buffer_size)
+        dead = state.get(self.time_since_fired) > self.config.dead_after
+        if self.config.death_penalty_threshold is not None:
+            dead = dead | (
+                (state.get(self.activated_buffer).mean(0) < self.config.death_penalty_threshold)
+                * (state.get(self.num_steps) > self.config.buffer_size))
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
         elif self.config.death_loss_type == "sparsity_threshold":
