@@ -21,6 +21,7 @@ def main(
     restore = False,
     wandb_entity = "neverix",
     layer = 20,
+    is_gated: bool = False,
 ):
     n_features = 3072
 
@@ -37,7 +38,7 @@ def main(
         use_wandb=(wandb_entity, "saex") if wandb_entity else None,
         log_every=10,
         hist_every=100,
-        save_path=f"weights/phi-l{layer}.safetensors",
+        save_path=f"weights/phi-l{layer}{'-gated' if is_gated else ''}.safetensors",
         dry_run_steps=0,
         no_update=False,
         sae_config=SAEConfig(
@@ -62,7 +63,7 @@ def main(
             buffer_size=1_000,
             restrict_dec_norm="exact",
             sparsity_tracking_epsilon=0.1,
-            is_gated=True,
+            is_gated=is_gated,
         ),
         sae_restore=restore,
         cache_every_steps=int(cache_size / batch_size * cache_ratio),

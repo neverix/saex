@@ -5,6 +5,7 @@ from typing import List
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
+import jax.tree_util
 
 import equinox as eqx
 from micrlhf.llama import LlamaBlock, LlamaTransformer
@@ -13,8 +14,26 @@ from penzai.toolshed import jit_wrapper
 from transformers import AutoTokenizer
 
 
+@pz.pytree_dataclass
+class ScanSequential(pz.Layer):
+    layer: pz.Layer
+
+    # @jax.jit
+    def __call__(self, inputs):
+        return jax.lax.scan(
+            lambda h, l: (l(h), None),
+            inputs,
+            jax.tree_map(lambda x: x.untag("layer"), self.layer))[0]
+
+
 def sequential_to_scan(model):
-    pass
+    def fn(seq):
+        layers = seq.sublayers
+        layers = [l for l in layers if not isinstance(l, pz.nn.Identity)]
+        layer = jax.tree_map(lambda *xs: pz.nx.stack(xs, "layer"), *layers)
+        return ScanSequential(layer)
+
+    return model.select().at_instances_of(pz.nn.Sequential).pick_nth_selected(1).apply(fn)
 
 
 @dataclass
@@ -39,14 +58,14 @@ class MicrlhfModel(object):
         self._llama = LlamaTransformer.from_pretrained(config.gguf_path, device_map=config.device_map)
         self.mesh = self._llama.mesh
         tag = f"residual-{config.layer}"
-        self._llama_residuals = pz.de.CollectingSideOutputs.handling(
+        self._llama_residuals = pz.de.CollectingSideOutputs.handling(sequential_to_scan(
             self._llama.select()
             .at_instances_of(LlamaBlock)
             .pick_nth_selected(config.layer)
             .insert_before(pz.de.TellIntermediate.from_config(tag=tag)),
-        )
+        ))
         self._llama_residuals_call = jax.jit(lambda lr, inputs: lr(inputs))
-        self._llama_replace = (
+        self._llama_replace = sequential_to_scan(
             self._llama.select()
             .at_instances_of(LlamaBlock)
             .apply_with_selected_index(
