@@ -210,7 +210,7 @@ class SAE(eqx.Module):
             ) * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if self.is_gated:
-            g_out = (jax.nn.relu(pre_relu) * jax.lax.stop_gradient(self.s)) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
+            g_out = (jax.nn.relu(pre_relu) * self.s) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
             gated_loss = self.reconstruction_loss(g_out, activations)
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()
@@ -299,17 +299,17 @@ class SAE(eqx.Module):
                 loss = loss * jnp.mean(dead.astype(jnp.float32))
             return loss
         elif self.config.death_loss_type == "dm_ghost_grads":
-            if self.is_gated:
-                reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
+            # if self.is_gated:
+                # reconstructions = jax.lax.stop_gradient((jax.nn.relu(pre_relu) * self.s) @ self.W_dec + self.b_dec)
             # post_exp = jnp.exp(pre_relu)
             # post_exp = jnp.where(pre_relu > 0, 2 - jnp.exp(-pre_relu), jnp.exp(pre_relu))
             post_exp = jax.nn.softplus(pre_relu)
             # post_exp = jnp.where(pre_relu > 0, pre_relu + 1, jnp.exp(pre_relu))
             # post_exp = post_exp * jax.lax.stop_gradient(self.s)
             post_exp = post_exp * self.s
-            # if self.is_gated:
+            if self.is_gated:
                 # post_exp = post_exp * jax.lax.stop_gradient(jax.nn.softplus(self.s_gate))
-                # post_exp = post_exp * jax.nn.softplus(self.s_gate)
+                post_exp = post_exp * jax.nn.softplus(self.s_gate)
             post_exp = jnp.where(dead, post_exp, 0)
             # ghost_recon = post_exp @ self.W_dec
             # ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
