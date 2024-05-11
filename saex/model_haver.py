@@ -9,7 +9,7 @@ import equinox as eqx
 from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .sae import SAE, SAEConfig
-from .utils import utils
+from . import utils
 
 
 class ModelHaver(object):

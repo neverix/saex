@@ -187,6 +187,9 @@ class SAE(eqx.Module):
     def __call__(self, activations: jax.Array, state=None):
         pre_relu, hidden = self.encode(activations)
         active = hidden != 0
+        jax.debug.print("{x}", x=active.mean(0).sum(-1))
+        jax.debug.print("{x}", x=state.get(self.avg_l0).sum(0))
+        jax.debug.print("buf {x}", x=state.get(self.activated_buffer).mean(0).sum())
         if state is not None:
             state = state.set(self.time_since_fired,
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
@@ -497,15 +500,15 @@ class SAE(eqx.Module):
                     case _:
                         load_param = param
                 try:
-                    self = eqx.tree_at(lambda s: s.s_gate, self,
+                    self = eqx.tree_at(lambda s: getattr(s, param), self,
                                     jax.device_put(f.get_tensor(load_param).astype(self.param_dtype),
                                                     self.sharding[param]))
                 except safetensors.SafetensorError:
-                    pass
+                    print("Can't load parameter", param)
             print("Weights restored.")
         return self
 
-    def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float16):
+    def save(self, weights_path: os.PathLike, save_dtype: jax.typing.DTypeLike = jnp.float32):
         os.makedirs(os.path.dirname(weights_path), exist_ok=True)
         state_dict = {
             "W_enc": self.W_enc,
