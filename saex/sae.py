@@ -1,4 +1,6 @@
 import os
+import json
+from tempfile import NamedTemporaryFile
 from dataclasses import dataclass
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
@@ -25,7 +27,7 @@ class SAEConfig:
     batch_size: int
     buffer_size: int = 100
 
-    expansion_factor: int = 80  # 32
+    expansion_factor: float = 32
     
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
@@ -88,7 +90,7 @@ class SAE(eqx.Module):
             key = utils.get_key()
         key, w_enc_subkey, w_dec_subkey = jax.random.split(key, 3)
         self.config = config
-        self.d_hidden = config.n_dimensions * config.expansion_factor
+        self.d_hidden = int(config.n_dimensions * config.expansion_factor)
         
         spec, state_spec = self.get_partition_spec()
         sharding = {k: jshard.NamedSharding(mesh, v) for k, v in spec.items()}
@@ -187,9 +189,6 @@ class SAE(eqx.Module):
     def __call__(self, activations: jax.Array, state=None):
         pre_relu, hidden = self.encode(activations)
         active = hidden != 0
-        jax.debug.print("{x}", x=active.mean(0).sum(-1))
-        jax.debug.print("{x}", x=state.get(self.avg_l0).sum(0))
-        jax.debug.print("buf {x}", x=state.get(self.activated_buffer).mean(0).sum())
         if state is not None:
             state = state.set(self.time_since_fired,
                               jnp.where(active.any(axis=0), 0, state.get(self.time_since_fired) + 1))
@@ -521,3 +520,39 @@ class SAE(eqx.Module):
         }
         state_dict = {k: v.astype(save_dtype) for k, v in state_dict.items()}
         save_file(state_dict, weights_path)
+
+    def push_to_hub(self, repo: str, sae_name: str = ""):
+        prefix = f"{sae_name}/" if sae_name else ""
+        import huggingface_hub as hf_hub
+        api = hf_hub.HfApi()
+        print("Uploading config...")
+        config = dict(
+            d_in=self.config.n_dimensions,
+            dtype=self.config.param_dtype,
+            expansion_factor=self.config.expansion_factor,
+            l1_coefficient=self.config.sparsity_coefficient,
+            train_batch_size=self.config.batch_size,
+            dead_feature_window=self.config.dead_after,
+            use_ghost_grads="ghost" in self.config.death_loss_type,
+            d_sae=self.d_hidden,
+        )
+        with NamedTemporaryFile("w", suffix="cfg.json") as cfg_file:
+            json.dump(config, cfg_file)
+            cfg_file.flush()
+            cfg_file.seek(0)
+            api.upload_file(
+                path_or_fileobj=cfg_file.name,
+                path_in_repo=f"{prefix}/cfg.json",
+                repo_id=repo,
+                repo_type="model"
+            )
+        with NamedTemporaryFile("wb", suffix="weights.safetensors") as weights_file:
+            print("Saving weights...")
+            self.save(weights_file.name)
+            print("Uploading weights...")
+            api.upload_file(
+                path_or_fileobj=weights_file.name,
+                path_in_repo=f"{prefix}/sae_weights.safetensors",
+                repo_id=repo,
+                repo_type="model"
+            )

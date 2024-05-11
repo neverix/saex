@@ -9,6 +9,7 @@ import jax.tree_util
 
 import equinox as eqx
 from micrlhf.llama import LlamaBlock, LlamaTransformer
+from micrlhf.flash import flashify
 from penzai import pz
 from penzai.toolshed import jit_wrapper
 from transformers import AutoTokenizer
@@ -43,6 +44,7 @@ class MicrlhfModelConfig:
     layer: int
     max_seq_len: int = 512
     device_map: str = "auto:mp=2"
+    use_flash: bool = False
 
     @property
     def model_class(self) -> type:
@@ -56,6 +58,8 @@ class MicrlhfModel(object):
         self.config = config
         self._tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_path)
         self._llama = LlamaTransformer.from_pretrained(config.gguf_path, device_map=config.device_map)
+        if config.use_flash:
+            self._llama = flashify(self._llama)
         self.mesh = self._llama.mesh
         tag = f"residual-{config.layer}"
         self._llama_residuals = pz.de.CollectingSideOutputs.handling(sequential_to_scan(
