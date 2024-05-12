@@ -59,6 +59,5 @@ Yes. I haven't tested with smaller batch sizes, but you can get comparable resul
 # TODOs
 
 * Anthropic's scaled sparsity loss
-* Feature visualization
 * Autointerp
 * Dreaming

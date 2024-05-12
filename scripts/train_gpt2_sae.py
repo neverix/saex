@@ -16,14 +16,15 @@ def main(
     max_seq_len = 1024,
     sparsity_coefficient=5e-5,
     save_steps=1000,
-    is_xl = True,
+    size=0,
     layer = 32,
     # f"weights/jb-gpt2s-{layer}.safetensors"
     restore = False,
     train_on_lamini = False,
     wandb_entity = "neverix",
+    push_to_hub = None,
 ):
-    n_features = 1600 if is_xl else 768
+    n_features = [768, ..., 1280, 1600][size]
 
     config = BufferTrainerConfig(
         n_dimensions=n_features,
@@ -71,7 +72,7 @@ def main(
         restore_buffer=False,
         save_buffer=False,
         model_config=TransformersModelConfig(
-            model_name_or_path="openai-community/gpt2-xl" if is_xl else "gpt2",
+            model_name_or_path=f"openai-community/{['gpt2-small', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'][size]}",
             # model_name_or_path="MBZUAI/LaMini-GPT-124M",
             from_pt=True,
             layer=layer,
@@ -90,6 +91,7 @@ def main(
         buffer_dtype=jnp.float32,
         use_devices=n_devices,
         mp_devices=mp_devices,
+        push_to_hub=push_to_hub,
     )
     train_main(config)
 

@@ -76,8 +76,8 @@ def main(
         model_config=MicrlhfModelConfig(
             tokenizer_path="microsoft/Phi-3-mini-4k-instruct",
             gguf_path="weights/phi-3-16.gguf",
-            device_map="auto" if n_devices > 1 else "tpu:0",
-
+            device_map=f"auto:mp={mp_devices}" if n_devices > 1 else "tpu:0",
+            use_flash=True,
             layer=layer,
             max_seq_len=max_seq_len,
         ),

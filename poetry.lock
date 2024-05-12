@@ -4213,6 +4213,8 @@ dm-tree = "*"
 gast = ">=0.3.2"
 numpy = ">=1.13.3"
 six = ">=1.10.0"
+tensorflow = {version = ">=2.16", optional = true, markers = "extra == \"tf\""}
+tf-keras = {version = ">=2.16", optional = true, markers = "extra == \"tf\""}
 
 [package.extras]
 jax = ["jax", "jaxlib"]
@@ -4262,6 +4264,20 @@ files = [
 
 [package.extras]
 tests = ["pytest", "pytest-cov"]
+
+[[package]]
+name = "tf-keras"
+version = "2.16.0"
+description = "Deep learning for humans."
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "tf_keras-2.16.0-py3-none-any.whl", hash = "sha256:b2ad0541fa7d9e92c4b7a1b96593377afb58aaff374299a6ca6be1a42f51d899"},
+    {file = "tf_keras-2.16.0.tar.gz", hash = "sha256:db53891f1ac98197c2acced98cdca8c06ba8255655a6cb7eb95ed49676118280"},
+]
+
+[package.dependencies]
+tensorflow = ">=2.16,<2.17"
 
 [[package]]
 name = "tiktoken"
@@ -5065,4 +5081,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "761446c9ed4140e93dd1ae66ca4de093ff7c770428ec89f3ba0c0bcb6e741eff"
+content-hash = "c7eaeb3eb54aea108af365aca4fa95730dddfa618aebd7f6f6af700a3571a75c"

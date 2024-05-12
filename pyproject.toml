@@ -30,6 +30,7 @@ micrlhf-progress = {git = "https://github.com/neverix/micrlhf-progress.git"}
 tensorflow = "^2.16.1"
 tensorboard-plugin-profile = "^2.15.1"
 more-itertools = "^10.2.0"
+tensorflow-probability = {extras = ["tf"], version = "^0.24.0"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1"

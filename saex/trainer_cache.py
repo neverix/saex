@@ -63,6 +63,8 @@ class BufferTrainerConfig:
     
     use_devices: int
     mp_devices: int
+    
+    push_to_hub: Optional[Tuple[str, str]]
 
 
 class BufferTrainer(ModelHaver):
@@ -253,4 +255,8 @@ class BufferTrainer(ModelHaver):
             save_buffer = input("Save buffer? (y/N)")
             if save_buffer.lower() in ("y", "yes"):
                 self.buffer.save(self.buffer_state, self.config.save_buffer)
+        if self.config.push_to_hub:
+            push_to_hub = input("Push to hub? (y/N)")
+            if push_to_hub.lower() in ("y", "yes"):
+                self.sae.push_to_hub(*self.config.push_to_hub)
         run.finish()
