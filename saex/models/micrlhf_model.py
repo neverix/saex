@@ -133,10 +133,10 @@ class MicrlhfModel(object):
     def encode_texts(self, texts: List[str]):
         tokens = self._tokenizer.batch_encode_plus(
             texts,
-            return_tensors="jax", padding="max_length",
+            return_tensors="np", padding="max_length",
             truncation=True, max_length=self.config.max_seq_len)
         tokens = {k: jax.device_put(v, self.sharding) for k, v in tokens.items()}
-        token_array = pz.nx.wrap(jnp.asarray(tokens["input_ids"]).reshape((1, -1)), "batch", "seq")
+        token_array = pz.nx.wrap(jnp.asarray(tokens["input_ids"]), "batch", "seq")
         inputs = self._llama.inputs.from_basic_segments(token_array)
         return inputs, tokens["attention_mask"].reshape(-1)
 

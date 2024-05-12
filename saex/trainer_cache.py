@@ -240,7 +240,7 @@ class BufferTrainer(ModelHaver):
                         loss_clean, loss_reconstructed = self.model.eval_loss(texts, self.sae)
                         run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed,
                                  "recon_loss_diff": loss_reconstructed - loss_clean,
-                                 "log_recon_loss_diff": np.log(loss_reconstructed / loss_clean)}, step=iteration)
+                                 "log_recon_loss_ratio": np.log(loss_reconstructed / loss_clean)}, step=iteration)
 
                 # TODO: track in wandb:
                 # - learning rate

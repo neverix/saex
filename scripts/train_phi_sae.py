@@ -11,17 +11,18 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
 def main(
     n_devices: int = 4,
     mp_devices: int = 1,
-    cache_size = 2**14,
-    cache_batch_size = 64,
-    cache_ratio=1,
+    cache_size = 2**16,
+    cache_batch_size = 512,
+    cache_ratio=3.0,
     batch_size = 8192,
     max_seq_len = 128,
     sparsity_coefficient=5e-6,
-    save_steps=100,
+    save_steps=2500,
+    eval_loss_every=100,
     restore = False,
     wandb_entity = "neverix",
     layer = 20,
-    is_gated: bool = False,
+    is_gated: bool = True,
 ):
     n_features = 3072
 
@@ -77,7 +78,7 @@ def main(
             tokenizer_path="microsoft/Phi-3-mini-4k-instruct",
             gguf_path="weights/phi-3-16.gguf",
             device_map=f"auto:mp={mp_devices}" if n_devices > 1 else "tpu:0",
-            use_flash=True,
+            use_flash=max_seq_len >= 128 and max_seq_len % 128 == 0,
             layer=layer,
             max_seq_len=max_seq_len,
         ),
@@ -85,10 +86,11 @@ def main(
             dataset_name="nev/openhermes-2.5-phi-format-text",
         ),
         loss_batch_size=16,
-        eval_loss_every=100,
+        eval_loss_every=eval_loss_every,
         buffer_dtype=jnp.bfloat16,
         use_devices=n_devices,
         mp_devices=mp_devices,
+        push_to_hub=None,
     )
     train_main(config)
 
