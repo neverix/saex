@@ -1,8 +1,9 @@
+from more_itertools import chunked
+
+from .haver import ModelHaver
 from .iterable_dataset import IterableDatasetConfig
 from .models.micrlhf_model import MicrlhfModelConfig
-from .model_haver import ModelHaver
 from .sae import SAEConfig
-from more_itertools import chunked
 
 
 def main():

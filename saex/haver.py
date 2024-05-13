@@ -6,10 +6,10 @@ import numpy as np
 
 import equinox as eqx
 
+from . import utils
 from .buffer import ActivationBuffer
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .sae import SAE, SAEConfig
-from . import utils
 
 
 class ModelHaver(object):
@@ -32,6 +32,15 @@ class ModelHaver(object):
         self.model = model
         self.mesh = mesh
 
+        if create_dataset is None:
+            print("Loading dataset...")
+            create_dataset = create_iterable_dataset(dataset_config)
+        self.create_dataset = create_dataset
+
+
+class SAEHaver(object):
+    def __init__(self, sae: SAE = None, sae_restore: Optional[str] = None, sae_config: Optional[SAEConfig] = None, mesh=None):
+        self.mesh = mesh
         if sae is not None:
             self.sae, self.sae_state = utils.unstatify(sae)
         else:
@@ -43,8 +52,3 @@ class ModelHaver(object):
             sharding = {k: jshard.NamedSharding(self.mesh, v) for k, v in self.sae.get_partition_spec()[0].items()}
             sae_params, _ = eqx.partition(self.sae, lambda x: eqx.is_array(x))
             self.sharding_sae = jax.tree_util.tree_map_with_path(lambda path, x: sharding.get(path[0].name), sae_params)
-        
-        if create_dataset is None:
-            print("Loading dataset...")
-            create_dataset = create_iterable_dataset(dataset_config)
-        self.create_dataset = create_dataset

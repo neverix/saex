@@ -97,7 +97,7 @@ def main(
         push_to_hub=push_to_hub,
         ema=ema,
     )
-    train_main(config)
+    train_main([config])
 
 
 if __name__ == "__main__":
