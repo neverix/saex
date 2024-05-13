@@ -9,20 +9,25 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
 
 
 def main(
+    train_steps: int = 100_000,
     n_devices: int = 4,
     mp_devices: int = 1,
     cache_size = 2**16,
     cache_batch_size = 512,
-    cache_ratio=3.0,
+    cache_ratio=2.0,
     batch_size = 8192,
     max_seq_len = 128,
-    sparsity_coefficient=5e-6,
+    sparsity_coefficient=4e-6,
     save_steps=2500,
     eval_loss_every=100,
     restore = False,
     wandb_entity = "neverix",
     layer = 20,
     is_gated: bool = True,
+    use_recip=False,
+    death_penalty_threshold=9e-5,
+    push_to_hub=None,
+    ema=None,
 ):
     n_features = 3072
 
@@ -34,7 +39,7 @@ def main(
         scheduler_warmup=128,
         scheduler_cycle=100_000,
         scheduler_multiply=0.1,
-        train_iterations=100_000,
+        train_iterations=train_steps,
         save_steps=save_steps,
         use_wandb=(wandb_entity, "saex") if wandb_entity else None,
         log_every=10,
@@ -44,9 +49,8 @@ def main(
         no_update=False,
         sae_config=SAEConfig(
             n_dimensions=n_features,
-            sparsity_loss_type="l1",
-            # sparsity_loss_type="recip",
-            # recip_schedule = ((100_000, 0.1),),
+            sparsity_loss_type="recip" if use_recip else "l1",
+            recip_schedule = ((100_000, 0.1),),
             sparsity_coefficient=sparsity_coefficient,
             batch_size=batch_size,
             expansion_factor=32,
@@ -59,7 +63,7 @@ def main(
             reconstruction_loss_type="mse_batchnorm",
             project_updates_from_dec=True,
             death_loss_type="dm_ghost_grads",
-            death_penalty_threshold=5e-7,
+            death_penalty_threshold=death_penalty_threshold,
             death_penalty_coefficient=0.25,
             dead_after=1_000,
             buffer_size=2_000,
@@ -90,7 +94,8 @@ def main(
         buffer_dtype=jnp.bfloat16,
         use_devices=n_devices,
         mp_devices=mp_devices,
-        push_to_hub=None,
+        push_to_hub=push_to_hub,
+        ema=ema,
     )
     train_main(config)
 

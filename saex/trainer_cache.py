@@ -40,6 +40,7 @@ class BufferTrainerConfig:
     scheduler_warmup: int
     scheduler_cycle: int
     scheduler_multiply: float
+    ema: Optional[float]
 
     train_iterations: int
     save_steps: Optional[int]
@@ -115,6 +116,16 @@ class BufferTrainer(ModelHaver):
         
         is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in ("f", "V")
         sae_params, sae_static = eqx.partition(self.sae, is_trainable)
+        if self.config.ema:
+            ema_params = jax.tree_map(lambda x: jnp.empty_like(x), sae_params)
+        else:
+            ema_params = None
+        def get_final_params():
+            if self.config.ema:
+                return eqx.combine(ema_params, sae_static)
+            else:
+                return eqx.combine(sae_params, sae_static)
+        
         key = utils.get_key()
         
         scheduler_cycle = self.config.scheduler_cycle
@@ -137,6 +148,7 @@ class BufferTrainer(ModelHaver):
         )
         opt_state = optimizer.init(sae_params)
         
+        
         @partial(jax.jit, static_argnums=1)
         @partial(jax.value_and_grad, has_aux=True)
         def loss_fn(sae_params, sae_static, sae_state, batch):
@@ -144,9 +156,9 @@ class BufferTrainer(ModelHaver):
             sae_output, sae_state = sae(batch, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
-        @partial(jax.jit, donate_argnums=(1, 2, 3), static_argnums=(4, 5))
+        @partial(jax.jit, donate_argnums=(1, 2, 3, 4), static_argnums=(5, 6))
         def train_step(
-            batch, sae_params, sae_state, opt_state, sae_static, optimizer, step, key
+            batch, sae_params, ema_params, sae_state, opt_state, sae_static, optimizer, step, key
         ):
             batch = jnp.nan_to_num(batch)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
@@ -170,7 +182,16 @@ class BufferTrainer(ModelHaver):
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
             opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
-            return sae_params, sae_state, opt_state, stats
+            if self.config.ema:
+                def ema_update(ema_params, sae_params):
+                    return jax.tree.map(lambda ema, sae: ema * self.config.ema + sae * (1 - self.config.ema),
+                                        ema_params, sae_params)
+                ema_params = jax.lax.switch((step == 0).astype(np.int32),
+                                            (ema_update, lambda x, y: y),
+                                            ema_params, sae_params)
+                return sae_params, ema_params, sae_state, opt_state, stats
+            else:
+                return sae_params, sae_state, opt_state, stats
 
         sampler = jax.jit(jax.vmap(self.buffer.sample_batch, in_axes=(None, 1), out_axes=(None, 1)), donate_argnums=(0,))
 
@@ -218,9 +239,9 @@ class BufferTrainer(ModelHaver):
                     batch = batch.reshape(-1, batch.shape[-1])
                 
                 key, subkey = jax.random.split(key)
-                sae_params, self.sae_state, opt_state, stats = train_step(
-                    batch, sae_params, self.sae_state, opt_state, sae_static, optimizer,
-                    iteration, subkey)
+                sae_params, ema_params, self.sae_state, opt_state, stats = train_step(
+                    batch, sae_params, ema_params, self.sae_state, opt_state,
+                    sae_static, optimizer, iteration, subkey)
                 stats["tokens_processed"] = tokens_processed
 
                 if iteration % self.config.log_every == 0:
@@ -236,7 +257,8 @@ class BufferTrainer(ModelHaver):
                         texts = []
                         for _ in range(self.config.loss_batch_size):
                             texts.append(next(dataset_iterator))
-                        self.sae = eqx.combine(sae_params, sae_static)
+                        final_params = get_final_params()
+                        self.sae = eqx.combine(final_params, sae_static)
                         loss_clean, loss_reconstructed = self.model.eval_loss(texts, self.sae)
                         run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed,
                                  "recon_loss_diff": loss_reconstructed - loss_clean,
@@ -247,7 +269,8 @@ class BufferTrainer(ModelHaver):
                 # - norm ratio
                 
                 if self.config.save_steps and iteration % self.config.save_steps == 0:
-                    self.sae = eqx.combine(sae_params, sae_static)
+                    final_params = get_final_params()
+                    self.sae = eqx.combine(final_params, sae_static)
                     self.sae.save(self.config.save_path)
         except KeyboardInterrupt:
             print("Exiting early...")
@@ -256,7 +279,7 @@ class BufferTrainer(ModelHaver):
             if save_buffer.lower() in ("y", "yes"):
                 self.buffer.save(self.buffer_state, self.config.save_buffer)
         if self.config.push_to_hub:
-            push_to_hub = input("Push to hub? (y/N)")
-            if push_to_hub.lower() in ("y", "yes"):
-                self.sae.push_to_hub(*self.config.push_to_hub)
+            final_params = get_final_params()
+            self.sae = eqx.combine(final_params, sae_static)
+            self.sae.push_to_hub(*self.config.push_to_hub)
         run.finish()

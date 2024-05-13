@@ -2131,7 +2131,7 @@ tqdm = "^4.66.2"
 type = "git"
 url = "https://github.com/neverix/micrlhf-progress.git"
 reference = "HEAD"
-resolved_reference = "325945c01914cd86a69486960f6270685f738f96"
+resolved_reference = "d05d6f90f6da0510e189054acf4207671b98767a"
 
 [[package]]
 name = "mkl"
