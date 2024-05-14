@@ -138,6 +138,8 @@ class BufferCacher(ModelHaver):
                 batch = batch.reshape(-1, batch.shape[-1])
 
             bar.set_postfix({"tokens_processed": tokens_processed})
+            if self.config.use_wandb:
+                wandb.log({"tokens_processed": tokens_processed}, step=iteration)
             do_stop = yield batch
             if do_stop:
                 break
@@ -161,13 +163,12 @@ class BufferTrainer(SAEHaver):
         self.config = config
         self.evaluator = evaluator
 
-    def train(self):
+    def train(self, wandb_suffix=0):
         print("Training for", self.config.train_iterations, "iterations")
         print("Sparsity coefficient:", self.config.sae_config.sparsity_coefficient)
         
         if self.config.use_wandb:
             entity, project = self.config.use_wandb
-            run = wandb.init(entity=entity, project=project)
 
             def save_config(config, prefix=""):
                 for k, v in config.items():
@@ -177,10 +178,10 @@ class BufferTrainer(SAEHaver):
                         save_config(v.__dict__, prefix + k + ".")
                     else:
                         try:
-                            run.config[prefix + k] = json.dumps(v)
+                            wandb.config[prefix + k] = json.dumps(v)
                         except TypeError:
                             pass
-            save_config(self.config.__dict__)
+            save_config(self.config.__dict__, prefix=f"{wandb_suffix}.")
         
         is_trainable = lambda value: eqx.is_array(value) and value.dtype.kind in ("f", "V")
         sae_params, sae_static = eqx.partition(self.sae, is_trainable)
@@ -261,12 +262,13 @@ class BufferTrainer(SAEHaver):
 
         bar = tqdm()
 
-        iteration = -1
+        iteration = 0  # no clue why it has to start from 1 but it does
         while True:
             iteration += 1
             
             batch = yield
             if batch is None:
+                print("stopped", wandb_suffix)
                 break
             
             key, subkey = jax.random.split(key)
@@ -279,17 +281,18 @@ class BufferTrainer(SAEHaver):
             if self.config.use_wandb:
                 if iteration % self.config.log_every == 0:
                     bar.set_postfix(stats)
-                    run.log(stats, step=iteration)
+                    stats = {f"{k}/{wandb_suffix}": v for k, v in stats.items()}
+                    wandb.log(stats, step=iteration)
                 if iteration % self.config.hist_every == self.config.hist_every - 1:
                     # look at this graph
-                    run.log({"histogram": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))}, step=iteration)
+                    wandb.log({f"histogram/{wandb_suffix}": wandb.Histogram(self.sae.get_log_sparsity(self.sae_state))}, step=iteration)
                 if iteration % self.config.eval_loss_every == self.config.eval_loss_every - 1:
                     final_params = get_final_params()
                     self.sae = eqx.combine(final_params, sae_static)
                     loss_clean, loss_reconstructed = self.evaluator.evaluate(self.sae)
-                    run.log({"loss_clean": loss_clean, "loss_reconstructed": loss_reconstructed,
-                                "recon_loss_diff": loss_reconstructed - loss_clean,
-                                "log_recon_loss_ratio": np.log(loss_reconstructed / loss_clean)}, step=iteration)
+                    wandb.log({f"loss_clean/{wandb_suffix}": loss_clean, "loss_reconstructed": loss_reconstructed,
+                                f"recon_loss_diff/{wandb_suffix}": loss_reconstructed - loss_clean,
+                                f"log_recon_loss_ratio/{wandb_suffix}": np.log(loss_reconstructed / loss_clean)}, step=iteration)
 
             # TODO: track in wandb:
             # - learning rate
@@ -306,4 +309,3 @@ class BufferTrainer(SAEHaver):
             final_params = get_final_params()
             self.sae = eqx.combine(final_params, sae_static)
             self.sae.push_to_hub(*self.config.push_to_hub)
-        run.finish()

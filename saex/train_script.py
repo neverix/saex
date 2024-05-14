@@ -1,5 +1,6 @@
 from itertools import chain
 from typing import List, Union
+import wandb
 import gc
 
 import jax_smi
@@ -12,7 +13,8 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
         configs = [configs]
 
     def cleanup():
-        for name in ("cacher", "trainers", "trainer_iterators", "cacher_iterator"):
+        for name in ("cacher", "trainers", "trainer_iterators", "cacher_iterator",
+                     "iterator", "batch"):
             try:
                 exec(f"del {name}")
             except NameError:
@@ -20,12 +22,15 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
 
     try:
         jax_smi.initialise_tracking()
-        cacher = BufferCacher(configs[0])
+        config = configs[0]
+        if config.use_wandb:
+            wandb.init(entity=config.use_wandb[0], project=config.use_wandb[1])
+        cacher = BufferCacher(config)
         trainers = []
         for config in configs:
             trainer = BufferTrainer(config, mesh=cacher.mesh, evaluator=cacher)
             trainers.append(trainer)
-        trainer_iterators = [trainer.train() for trainer in trainers]
+        trainer_iterators = [trainer.train(wandb_suffix=str(i)) for i, trainer in enumerate(trainers)]
         cacher_iterator = iter(cacher)
         for i in chain(trainer_iterators, [cacher_iterator]):
             next(i)
