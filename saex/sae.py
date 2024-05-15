@@ -48,7 +48,7 @@ class SAEConfig:
     death_loss_type: Literal["none", "ghost_grads", "sparsity_threshold", "dm_ghost_grads"] = "none"
     scale_ghost_by_death: bool = True
     dead_after: int = 50
-    death_penalty_threshold: Optional[float] = None
+    death_penalty_threshold: Optional[Union[Literal["auto"], float]] = None
     death_penalty_coefficient: float = 1.0
     resample_every: int = 1e10
     resample_type: Literal["boom", "sample_inputs"] = "sample_inputs"
@@ -263,9 +263,9 @@ class SAE(eqx.Module):
     
     def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-10):
         dead = state.get(self.time_since_fired) > self.config.dead_after
-        if self.config.death_penalty_threshold is not None:
+        if self.get_death_penalty_threshold(state) is not None:
             dead = dead | (
-                (state.get(self.activated_buffer).mean(0) < self.config.death_penalty_threshold)
+                (state.get(self.activated_buffer).mean(0) < self.get_death_penalty_threshold(state))
                 * (state.get(self.num_steps) > self.config.buffer_size))
         if self.config.death_loss_type == "none":
             return jnp.zeros(reconstructions.shape[:-1])
@@ -278,7 +278,7 @@ class SAE(eqx.Module):
             offset = jax.lax.stop_gradient(state.get(self.activated_buffer).mean(0) - sparsity)
             # offset = jax.lax.stop_gradient(jnp.log10(state.get(self.activated_buffer).mean(0) + eps) - log_sparsity)
             # offset = 0
-            return jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - jnp.log10(sparsity + offset + eps).sum(-1) * (state.get(self.num_steps) > self.config.buffer_size)
+            return jax.nn.relu(jnp.log10(self.death_penalty_threshold + eps)) - jnp.log10(sparsity + offset + eps).sum(-1) * (state.get(self.num_steps) > self.config.buffer_size)
             # return (jax.nn.relu(jnp.log10(self.config.death_penalty_threshold + eps)) - (log_sparsity + offset)).sum(-1)
             # return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1))
             # return (jax.nn.relu(self.config.death_penalty_threshold - (sparsity + offset)).sum(-1) / self.config.death_penalty_threshold)
@@ -451,6 +451,16 @@ class SAE(eqx.Module):
             max_time_since_fired=time_since_fired.max(),
         )
     
+    def get_death_penalty_threshold(self, state):
+        if self.config.death_penalty_threshold == "auto":
+            buf = state.get(self.activated_buffer)
+            l0_avg = buf.mean(0).sum()
+            thresh_calculated = (l0_avg * 0.1) / self.d_hidden
+            return jax.lax.select(state.get(self.num_steps) >= self.config.buffer_size,
+                                thresh_calculated, 0.0)
+        else:
+            return self.config.death_penalty_threshold
+
     def get_log_sparsity(self, state: eqx.nn.State):
         return np.log10(1e-13 + state.get(self.activated_buffer).mean(0))
         # return np.log10(1e-13 + state.get(self.avg_l0))

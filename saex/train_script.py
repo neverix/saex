@@ -40,7 +40,10 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
             except StopIteration:
                 batch = None
             for iterator in trainer_iterators:
-                iterator.send(batch)
+                try:
+                    iterator.send(batch)
+                except StopIteration:
+                    continue
             if batch is None:
                 break
             del batch

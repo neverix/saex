@@ -1,6 +1,7 @@
 import fire
-import jax
+import numpy as np
 import jax.numpy as jnp
+from typing import Optional
 
 from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.train_script import train_main
@@ -8,13 +9,13 @@ from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
                                 SAEConfig)
 
 
-def main(
+def train(
     train_steps: int = 100_000,
     n_devices: int = 4,
     mp_devices: int = 1,
     cache_size = 2**16,
     cache_batch_size = 256,
-    cache_ratio=2.0,
+    cache_ratio=1.0,
     batch_size = 2048,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
@@ -44,7 +45,7 @@ def main(
             train_iterations=train_steps,
             save_steps=save_steps,
             use_wandb=(wandb_entity, "saex") if wandb_entity else None,
-            log_every=10,
+            log_every=25,
             hist_every=100,
             save_path=f"weights/phi-l{layer}{'-gated' if is_gated else ''}.safetensors",
             dry_run_steps=0,
@@ -68,7 +69,7 @@ def main(
                 death_penalty_threshold=death_penalty_threshold,
                 death_penalty_coefficient=0.25,
                 dead_after=1_000,
-                buffer_size=2_000,
+                buffer_size=1_000,
                 restrict_dec_norm="exact",
                 sparsity_tracking_epsilon=0.1,
                 is_gated=is_gated,
@@ -89,7 +90,7 @@ def main(
                 max_seq_len=max_seq_len,
             ),
             dataset_config=IterableDatasetConfig(
-                dataset_name="nev/openhermes-2.5-lamini-phi-format-text",
+                dataset_name="nev/openhermes-2.5-phi-format-text",
             ),
             loss_batch_size=16,
             eval_loss_every=eval_loss_every,
@@ -102,6 +103,18 @@ def main(
         )
         configs.append(config)
     train_main(configs)
+
+
+def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e-6, n_train=4):
+    sfcs = np.linspace(min_sfc, max_sfc, n_train)
+    train(layer=layer, is_gated=True,
+          sparsity_coefficients=sfcs, n_devices=4, use_recip=True,
+        #   death_penalty_threshold="auto",
+          death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
+          train_steps=20_000,
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-3"),
+          restore=restore
+          )
 
 
 if __name__ == "__main__":
