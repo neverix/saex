@@ -14,7 +14,6 @@ from .sae import SAE, SAEConfig
 
 class ModelHaver(object):
     def __init__(self, model_config,
-                 sae: SAE = None, sae_restore: Optional[str] = None, sae_config: Optional[SAEConfig] = None,
                  dataset_config: Optional[IterableDatasetConfig] = None, create_dataset = None,
                  model = None,
                  use_devices=1, mp_devices=1):
