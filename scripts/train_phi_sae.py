@@ -107,14 +107,15 @@ def train(
 
 def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e-6, n_train=4):
     sfcs = np.linspace(min_sfc, max_sfc, n_train)
-    is_recip = False
-    train(layer=layer, is_gated=True,
-          sparsity_coefficients=sfcs * (1 if is_recip else 7 * min(1, 1 / ((layer/8) ** 2))),
+    is_recip = True
+    is_gated = False
+    train(layer=layer, is_gated=is_gated,
+          sparsity_coefficients=sfcs * (1 if is_recip else 7 * min(1, 1 / ((layer/8) ** 2))) * (1 if is_gated else 3),
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
-          death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
+          death_penalty_threshold=1e-5,  # <= 70 (L0) / 90k (features)
           train_steps=75_000,
-          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-5"),
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-6"),
           restore=restore
           )
 
