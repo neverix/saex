@@ -40,7 +40,7 @@ def train(
             beta1=0.0,  # Crucial for avoiding dead features
             beta2=0.99,  # Lower beta2 can lead to a slightly faster decrease in L0
             scheduler_warmup=128,
-            scheduler_cycle=100_000,
+            scheduler_cycle=max(100_000, train_steps * 2),
             scheduler_multiply=0.1,
             train_iterations=train_steps,
             save_steps=save_steps,
@@ -53,7 +53,7 @@ def train(
             sae_config=SAEConfig(
                 n_dimensions=n_features,
                 sparsity_loss_type="recip" if use_recip else "l1",
-                recip_schedule = ((100_000, 0.1),),
+                recip_schedule = ((1e10, 0.1),),
                 sparsity_coefficient=sparsity_coefficient,
                 batch_size=batch_size,
                 expansion_factor=16,
@@ -107,12 +107,14 @@ def train(
 
 def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e-6, n_train=4):
     sfcs = np.linspace(min_sfc, max_sfc, n_train)
+    is_recip = False
     train(layer=layer, is_gated=True,
-          sparsity_coefficients=sfcs, n_devices=4, use_recip=True,
+          sparsity_coefficients=sfcs * (1 if is_recip else 7 * min(1, 1 / ((layer/8) ** 2))),
+          n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
-          train_steps=30_000,
-          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-4"),
+          train_steps=75_000,
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-5"),
           restore=restore
           )
 
