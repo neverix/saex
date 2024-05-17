@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field, replace
-from typing import List
+from typing import List, Literal
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +24,8 @@ class MicrlhfModelConfig:
     max_seq_len: int = 512
     device_map: str = "auto:mp=2"
     use_flash: bool = False
+    from_type: Literal[None, "gemma"] = None
+    load_eager: bool = True
 
     @property
     def model_class(self) -> type:
@@ -36,7 +38,8 @@ class MicrlhfModel(object):
     def __init__(self, config: MicrlhfModelConfig):
         self.config = config
         self._tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_path)
-        self._llama = LlamaTransformer.from_pretrained(config.gguf_path, device_map=config.device_map)
+        self._llama = LlamaTransformer.from_pretrained(config.gguf_path, device_map=config.device_map,
+                                                       from_type=config.from_type, load_eager=config.load_eager)
         if config.use_flash:
             self._llama = flashify(self._llama)
         self.mesh = self._llama.mesh
