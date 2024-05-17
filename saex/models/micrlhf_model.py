@@ -44,23 +44,27 @@ class MicrlhfModel(object):
             self._llama = flashify(self._llama)
         self.mesh = self._llama.mesh
         tag = f"residual-{config.layer}"
+        get_residuals = self._llama.select() \
+            .at_instances_of(LlamaBlock) \
+            .pick_nth_selected(config.layer) \
+            .insert_before(pz.de.TellIntermediate.from_config(tag=tag))
         self._llama_residuals = pz.de.CollectingSideOutputs.handling(sequential_to_scan(
-            self._llama.select()
-            .at_instances_of(LlamaBlock)
-            .pick_nth_selected(config.layer)
-            .insert_before(pz.de.TellIntermediate.from_config(tag=tag)),
+            get_residuals
         ))
         self._llama_residuals_call = jax.jit(lambda lr, inputs: lr(inputs))
-        self._llama_replace = sequential_to_scan(
-            self._llama.select()
-            .at_instances_of(LlamaBlock)
+        replaced = \
+            self._llama.select() \
+            .at_instances_of(LlamaBlock) \
             .apply_with_selected_index(
                 lambda i, x: x if i >= config.layer else pz.nn.Identity()
-            )
-            .select()
-            .at_instances_of(pz.nn.EmbeddingLookup)
+            ) \
+            .select() \
+            .at_instances_of(pz.nn.EmbeddingLookup) \
             .apply(lambda _: pz.nn.Identity())
-        )
+        if config.from_type == "gemma":
+            replaced = replaced.select().at_instances_of(pz.nn.ConstantRescale
+                                                         ).pick_nth_selected(0).apply(lambda _: pz.nn.Identity())
+        self._llama_replace = sequential_to_scan(replaced)
         self._llama_replace_call = jax.jit(
             (lambda sae_s, sae_d, inputs, lr, hiddens:
                 lr(replace(inputs, tokens=

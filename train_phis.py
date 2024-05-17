@@ -11,4 +11,4 @@ for layer_idx in range(len(layers)):
     os.system(f'poetry run python -m scripts.train_phi_sae --layer {layer} --restore "{restore}" '
               f'--min_sfc {min_sfc} --max_sfc {max_sfc} --n_train=1')
 
-# nohup poetry run python scratch.py &
+# nohup poetry run python train_phis.py &
