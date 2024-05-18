@@ -56,7 +56,7 @@ def train(
                 recip_schedule = ((1e10, 0.1),),
                 sparsity_coefficient=sparsity_coefficient,
                 batch_size=batch_size,
-                expansion_factor=16,
+                expansion_factor=32,
                 use_encoder_bias=True,
                 remove_decoder_bias=False,
                 encoder_init_method="orthogonal",
@@ -115,9 +115,9 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           sparsity_coefficients=sfcs,
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
-          death_penalty_threshold=1e-6,  # <= 70 (L0) / 90k (features)
-          train_steps=25_000,
-          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-0"),
+          death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
+          train_steps=200_000,
+          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-1"),
           restore=restore
           )
 
