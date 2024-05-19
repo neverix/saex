@@ -1,3 +1,5 @@
+import re
+
 import fire
 import numpy as np
 import jax.numpy as jnp
@@ -7,6 +9,28 @@ from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.train_script import train_main
 from saex.trainer_cache import (BufferTrainerConfig, IterableDatasetConfig,
                                 SAEConfig)
+
+
+def clean(x):
+    x = x.strip()
+    if x.endswith("\n"):
+        return clean(x[:-1])
+    if x.endswith("<|end|>"):
+        return clean(x[:-7])
+    return x
+
+def phi_clean_fn(x):
+    _, _, user_and_everything = x.partition("<|user|> ")
+    user, _, assistant = user_and_everything.partition("<|assistant|>")
+    user = clean(user)
+    assistant = assistant.partition("<|assistant|>")[0].partition("<|user|>")[0].partition("<|end|>")[0]
+    assistant = clean(assistant)
+    if assistant:
+        result = f"<|user|>\n{user}<|end|>\n<|assistant|>\n{assistant}"
+    else:
+        result = f"<|user|>\n{user}"
+
+    return result
 
 
 def train(
@@ -56,7 +80,7 @@ def train(
                 recip_schedule = ((1e10, 0.1),),
                 sparsity_coefficient=sparsity_coefficient,
                 batch_size=batch_size,
-                expansion_factor=16,
+                expansion_factor=32,
                 use_encoder_bias=True,
                 remove_decoder_bias=False,
                 encoder_init_method="orthogonal",
@@ -91,6 +115,7 @@ def train(
             ),
             dataset_config=IterableDatasetConfig(
                 dataset_name="nev/generated-phi-format-text",
+                clean_fn=phi_clean_fn,
             ),
             loss_batch_size=16,
             eval_loss_every=eval_loss_every,
@@ -113,9 +138,9 @@ def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e
           sparsity_coefficients=sfcs * (1 if is_recip else 7 * min(1, 1 / ((layer/8) ** 2))) * (1 if is_gated else 3),
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
-          death_penalty_threshold=1e-5,  # <= 70 (L0) / 90k (features)
+          death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
           train_steps=75_000,
-          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-6"),
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-7"),
           restore=restore
           )
 

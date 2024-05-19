@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Callable
 
 import datasets
 
@@ -8,6 +9,7 @@ class IterableDatasetConfig:
     dataset_name: str
     split: str = "train"
     text_column: str = "text"
+    clean_fn: Callable = lambda x: x
 
 
 def create_iterable_dataset(config: IterableDatasetConfig):
@@ -15,5 +17,8 @@ def create_iterable_dataset(config: IterableDatasetConfig):
     
     def generator():
         for sample in dataset:
-            yield sample[config.text_column]
+            text = config.clean_fn(sample[config.text_column])
+            if not text:
+                continue
+            yield text
     return generator
