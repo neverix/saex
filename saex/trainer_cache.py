@@ -27,45 +27,45 @@ from .sae import SAE, SAEConfig
 class BufferTrainerConfig:
     n_dimensions: int
     
-    loss_batch_size: int
-
-    use_wandb: Optional[Tuple[str, str]]
-    log_every: int
-    hist_every: int
-    eval_loss_every: int
-
-    lr: float
-    beta1: float
-    beta2: float
-    scheduler_warmup: int
-    scheduler_cycle: int
-    scheduler_multiply: float
-    ema: Optional[float]
-
-    train_iterations: int
-    save_steps: Optional[int]
-    save_path: Optional[str]
-    dry_run_steps: int
-    no_update: bool
-    
     sae_config: SAEConfig
-    sae_restore: Optional[str]
-    
-    cache_batch_size: int
-    cache_every_steps: int
-    cache_acc: int
     model_config: TransformersModelConfig
     dataset_config: IterableDatasetConfig
+
+    loss_batch_size: int = 16
+    use_wandb: Optional[Tuple[str, str]] = None
+    log_every: int = 1
+    hist_every: int = 1
+    eval_loss_every: int = 1
+
+    lr: float = 1e-3
+    beta1: float = 0.0
+    beta2: float = 0.99
+    scheduler_warmup: int = 0
+    scheduler_cycle: int = 1e6
+    scheduler_multiply: float = 0.0
+    ema: Optional[float] = None
+
+    train_iterations: int = 1e6
+    save_steps: Optional[int] = None
+    save_path: Optional[str] = None
+    dry_run_steps: int = 0
+    no_update: bool = False
+
+    sae_restore: Optional[str] = None
+    restore_buffer: Optional[str] = None
     
-    buffer_max_samples: int
-    buffer_dtype: jnp.dtype
-    save_buffer: Optional[str]
-    restore_buffer: Optional[str]
+    cache_batch_size: int = 16
+    cache_every_steps: int = 1
+    cache_acc: int = 1
+
+    buffer_max_samples: int = 0
+    buffer_dtype: jnp.dtype = jnp.float32
+    save_buffer: Optional[str] = None
     
-    use_devices: int
-    mp_devices: int
+    use_devices: int = 1
+    mp_devices: int = 1
     
-    push_to_hub: Optional[Tuple[str, str]]
+    push_to_hub: Optional[Tuple[str, str]] = None
 
 
 class BufferCacher(ModelHaver):
