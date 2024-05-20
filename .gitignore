@@ -165,5 +165,4 @@ figures/scratch/
 weights/
 # WandB
 wandb/
-*.ipynb
 nohup.out
