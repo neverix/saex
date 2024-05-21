@@ -23,8 +23,8 @@ from .utils.geometric_median import geometric_median
 @dataclass(frozen=True)
 class SAEConfig:
     n_dimensions: int
-    sparsity_coefficient: float
     batch_size: int
+    sparsity_coefficient: float = 1
     buffer_size: int = 100
 
     expansion_factor: float = 32
