@@ -116,8 +116,8 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
-          train_steps=200_000,
-          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-1"),
+          train_steps=150_000,
+          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-2"),
           restore=restore
           )
 

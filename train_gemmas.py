@@ -6,7 +6,7 @@ for layer_idx in range(len(layers)):
     restore = None  # if layer_idx == 0 else f"weights/phi-l{layers[layer_idx-1]}-gated.safetensors"
     fn = lambda x: x * ((layer / 12) ** 2)
     # fn = lambda x: x
-    min_sfc, max_sfc = fn(2e-5), fn(5e-5)
+    min_sfc, max_sfc = fn(5e-5), fn(5e-5)
     min_sfc, max_sfc = min_sfc, min_sfc
     os.system(f'poetry run python -m scripts.train_gemma_sae --layer {layer} --restore "{restore}" '
               f'--min_sfc {min_sfc} --max_sfc {max_sfc} --n_train=1')
