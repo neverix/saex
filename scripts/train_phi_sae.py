@@ -114,7 +114,7 @@ def train(
                 max_seq_len=max_seq_len,
             ),
             dataset_config=IterableDatasetConfig(
-                dataset_name="nev/generated-phi-format-text",
+                dataset_name="nev/generated-phi-format-text-3",
                 clean_fn=phi_clean_fn,
             ),
             loss_batch_size=16,
@@ -139,8 +139,8 @@ def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
-          train_steps=50_000,
-          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-7"),
+          train_steps=100_000,
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-8"),
           restore=restore
           )
 

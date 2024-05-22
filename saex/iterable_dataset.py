@@ -16,9 +16,10 @@ def create_iterable_dataset(config: IterableDatasetConfig):
     dataset = datasets.load_dataset(config.dataset_name, streaming=True)[config.split]
     
     def generator():
-        for sample in dataset:
-            text = config.clean_fn(sample[config.text_column])
-            if not text:
-                continue
-            yield text
+        while True:
+            for sample in dataset:
+                text = config.clean_fn(sample[config.text_column])
+                if not text:
+                    continue
+                yield text
     return generator
