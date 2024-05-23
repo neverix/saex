@@ -102,14 +102,14 @@ class MicrlhfModel(object):
     def to_str_tokens(self, texts: List[str]):
         tokens = self._tokenizer.batch_encode_plus(
             texts,
-            return_tensors="jax", padding="max_length",
+            return_tensors="np", padding="max_length",
             truncation=True, max_length=self.config.max_seq_len)
         return [self._tokenizer.batch_decode(ii) for ii in tokens["input_ids"]]
 
     def to_tokens(self, texts: List[str]):
         tokens = self._tokenizer.batch_encode_plus(
             texts,
-            return_tensors="jax", padding="max_length",
+            return_tensors="np", padding="max_length",
             truncation=True, max_length=self.config.max_seq_len)
         return tokens["input_ids"]
 
