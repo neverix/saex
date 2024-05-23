@@ -43,10 +43,20 @@ class MicrlhfModel(object):
         if config.use_flash:
             self._llama = flashify(self._llama)
         self.mesh = self._llama.mesh
-        tag = f"residual-{config.layer}"
+        self.set_layer(config.layer)
+        @jax.jit
+        def loss_fn(logits, inputs, masks):
+            logits = pz.nx.nmap(lambda l, i, m: jnp.take_along_axis(jax.nn.log_softmax(l[:-1], -1), i[1:, None], 1)[:, 0] * m[1:]
+                                )(logits.untag("seq", "vocabulary"), inputs.tokens.untag("seq"), masks.untag("seq"))
+            return -logits.data_array.mean() / masks.data_array.mean()
+        self.loss_fn = loss_fn
+        self.sharding = jshard.NamedSharding(self.mesh, jshard.PartitionSpec("dp", None))
+
+    def set_layer(self, layer):
+        tag = f"residual-{layer}"
         get_residuals = self._llama.select() \
             .at_instances_of(LlamaBlock) \
-            .pick_nth_selected(config.layer) \
+            .pick_nth_selected(layer) \
             .insert_before(pz.de.TellIntermediate.from_config(tag=tag))
         self._llama_residuals = pz.de.CollectingSideOutputs.handling(sequential_to_scan(
             get_residuals
@@ -56,12 +66,12 @@ class MicrlhfModel(object):
             self._llama.select() \
             .at_instances_of(LlamaBlock) \
             .apply_with_selected_index(
-                lambda i, x: x if i >= config.layer else pz.nn.Identity()
+                lambda i, x: x if i >= layer else pz.nn.Identity()
             ) \
             .select() \
             .at_instances_of(pz.nn.EmbeddingLookup) \
             .apply(lambda _: pz.nn.Identity())
-        if config.from_type == "gemma":
+        if self.config.from_type == "gemma":
             replaced = replaced.select().at_instances_of(pz.nn.ConstantRescale
                                                          ).pick_nth_selected(0).apply(lambda _: pz.nn.Identity())
         self._llama_replace = sequential_to_scan(replaced)
@@ -70,13 +80,6 @@ class MicrlhfModel(object):
                 lr(replace(inputs, tokens=
                            pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding")))),
             static_argnums=0)
-        @jax.jit
-        def loss_fn(logits, inputs, masks):
-            logits = pz.nx.nmap(lambda l, i, m: jnp.take_along_axis(jax.nn.log_softmax(l[:-1], -1), i[1:, None], 1)[:, 0] * m[1:]
-                                )(logits.untag("seq", "vocabulary"), inputs.tokens.untag("seq"), masks.untag("seq"))
-            return -logits.data_array.mean() / masks.data_array.mean()
-        self.loss_fn = loss_fn
-        self.sharding = jshard.NamedSharding(self.mesh, jshard.PartitionSpec("dp", None))
 
     def __call__(self, texts: List[str]):
         inputs, mask = self.encode_texts(texts)
