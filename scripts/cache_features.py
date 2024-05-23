@@ -16,6 +16,8 @@ from more_itertools import chunked
 n_features = 3072
 batch_size = 64
 layer = 20
+revision = 8
+max_seq_len = 128
 dataset_config = IterableDatasetConfig(
     dataset_name="nev/openhermes-2.5-phi-format-text",
     # dataset_name="nev/generated-phi-format-text",
@@ -26,7 +28,7 @@ model_config = MicrlhfModelConfig(
     device_map="auto",
     use_flash=False,
     layer=layer,
-    max_seq_len=128,
+    max_seq_len=max_seq_len,
 )
 sae_config = SAEConfig(
     n_dimensions=n_features,
@@ -47,7 +49,7 @@ haver = ModelHaver(model_config=model_config, dataset_config=dataset_config)
 from micrlhf.utils.load_sae import get_sae
 import os
 os.makedirs("weights/sae", exist_ok=True)
-sae_path = get_sae(layer, 8, model_dir="weights", return_fname=True)
+sae_path = get_sae(layer, revision, model_dir="weights", return_fname=True)
 haver_sae = SAEHaver(
     sae_config=sae_config,
     mesh=haver.mesh,
@@ -60,7 +62,7 @@ import pyarrow as pa
 from tqdm.auto import trange
 import pyarrow.parquet as pq
 
-n_batches = 100
+n_batches = 1_000
 token_batches = []
 for _, texts in zip(trange(n_batches), chunked(haver.create_dataset(), batch_size)):
     tokens = haver.model.to_tokens(texts)
@@ -119,7 +121,7 @@ def process_tokens(stride=STRIDE, n_strides=N_STRIDES, seed=0, n_batches=1_000):
             hiddens,
             mask
         )
-        probs = 1 / ((1 + num_activations).astype(jnp.float32) + 1e-12)
+        probs = 1 / ((1 + num_activations).astype(jnp.float32) + 1e-20)
         probs = probs * (actives != -1)
         choose = jax.random.bernoulli(jax.random.PRNGKey(random.randint(0, 2**32 - 1)),
                                         probs)
@@ -142,8 +144,8 @@ def process_tokens(stride=STRIDE, n_strides=N_STRIDES, seed=0, n_batches=1_000):
             bar.set_postfix(tokens_processed=tokens_processed, tps=tokens_processed / bar.format_dict["elapsed"])
     except KeyboardInterrupt:
         pass
-    return to_cpu(activ_cache), to_cpu(num_activations)
-activ_cache, num_activations = process_tokens(n_batches=n_batches)
+    return to_cpu(activ_cache), to_cpu(num_activations), tokens_processed
+activ_cache, num_activations, tokens_processed = process_tokens(n_batches=n_batches)
 
 # In[64]:
 
@@ -157,7 +159,6 @@ for i, p in enumerate(activ_cache[feature]):
     print((i * STRIDE, (i + 1) * STRIDE),
           repr(haver.model.decode(tokens)))
 
-
 # In[67]:
 
 from tqdm.auto import tqdm
@@ -165,25 +166,16 @@ import pyarrow as pa
 import numpy as np
 
 batches = []
-for feat, activs in tqdm(activ_cache.items()):
-    batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i, activation=np.float16(a))
-                                               for i, a in activs], schema=pa.schema([
+for feat, (activs, freqs) in enumerate(zip(tqdm(activ_cache), num_activations)):
+    total_activs = freqs.sum()
+    batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i, activation=np.float16(j * STRIDE), freq=np.float16(f / (tokens_processed / batch_size)))
+                                               for j, (i, f) in enumerate(zip(activs, freqs))],
+                                              schema=pa.schema([
         ("feature", pa.int32()),
-        ("token", pa.int32()),
         ("activation", pa.float16()),
+        ("token", pa.int32()),
+        ("freq", pa.float16()),
     ])))
-
-    # # 60% more efficient compression scheme, not guaranteed to work
-    # token_0 = activs[0][0]
-    # a_0 = activs[0][1]
-    # schema = pa.schema([
-    #     ("feature", pa.int32()),
-    #     ("token", pa.uint16()),
-    #     ("activation", pa.float16()),
-    # ])
-    # batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=token_0, activation=np.float16(a_0))], schema=schema))
-    # batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i2 - i1, activation=np.float16(a2))
-    #                                            for (i1, a1), (i2, a2) in zip(activs[:-1], activs[1:])], schema=schema))
 
 
 # In[68]:
@@ -191,10 +183,9 @@ for feat, activs in tqdm(activ_cache.items()):
 
 import pyarrow.parquet as pq
 import pyarrow as pa
-pq_path = f"../weights/phi-l{layer}-activations.parquet"
+pq_path = f"../weights/phi-l{layer}-r{revision}-activations.parquet"
 table = pa.Table.from_batches(batches)
 pq.write_table(table, pq_path, compression="snappy")
-
 
 # In[ ]:
 
