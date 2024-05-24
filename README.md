@@ -11,6 +11,12 @@ scripts/download_jb_saes.sh
 wget 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/main/phi-3-mini-4k-instruct.fp16.gguf?download=true' -O weights/phi-3-16.gguf
 # Generate data for a toy model
 JAX_PLATFORMS=cpu python -m saex.toy_models
+# Train Phi and Gemma SAEs
+nohup python train_phis.py &
+nohup python train_gemmas.py &
+# Feature visualization
+python -m scripts.cache_features
+gradio scripts/feature_visualizer.py
 ```
 
 Tests (there aren't any yet):
