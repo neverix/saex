@@ -14,6 +14,7 @@ from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.haver import ModelHaver, SAEHaver
 from saex.sae import SAEConfig
 from more_itertools import chunked
+import dataclasses
 
 from micrlhf.utils.load_sae import get_sae
 import os
@@ -184,7 +185,11 @@ sae_config = SAEConfig(
     is_gated=False,
 )
 haver = ModelHaver(model_config=model_config, dataset_config=dataset_config)
-for layer in [8, 12, 16, 20, 24, 28, 4, 10, 18, 26]:
+# for layer in [8, 12, 16, 20, 24, 28, 4, 10, 18, 26]:
+for layer, revision in [(17, 4), (18, 4), (16, 6), (16, 5)]:
     haver.model.set_layer(layer)
-    for revision in [4, 5, 8]:
+    sae_config = dataclasses.replace(sae_config, is_gated=revision < 6)
+    try:
         main(layer, revision, n_batches=1_000)
+    except IndexError:
+        pass
