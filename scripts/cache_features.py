@@ -73,8 +73,15 @@ def step(hiddens, mask, activ_cache, num_activations, tokens_processed, n_featur
     num_activations += (actives != -1)
     return activ_cache, num_activations
 
+# @jax.jit
+def get_nonzeros(hiddens, max_l0):
+    val, ind = jax.lax.top_k(jnp.abs(hiddens), max_l0)
+    nonzeros = jnp.where(val != 0, ind, -1)
+    return nonzeros
+
 def main(layer=20, revision=8,
-         n_batches = 1000, tokens_file="tokens"):
+         n_batches=1000, tokens_file="tokens",
+         mnt=64):
     # In[2]:
 
     os.makedirs("weights/sae", exist_ok=True)
@@ -100,8 +107,7 @@ def main(layer=20, revision=8,
     def process_tokens(seed=0, n_batches=1_000):
         tokens_processed = 0
         n_features = haver_sae.sae.d_hidden
-        activ_cache = jnp.zeros((n_features, n_strides), dtype=jnp.int32)
-        num_activations = jnp.zeros((n_features, n_strides), dtype=jnp.int32)
+        activ_cache = defaultdict(list)
         # jsae = eqx.filter_jit(lambda s, x: s.encode(x)[1])
         cpu_device = jax.devices("cpu")[0]
         to_cpu = lambda x: np.asarray(jax.device_put(x, cpu_device))
@@ -113,42 +119,66 @@ def main(layer=20, revision=8,
                 activations, model_misc = haver.model(texts)
                 mask = model_misc.get("mask")
                 hiddens = haver_sae.sae.encode(activations)[1]
-                activ_cache, num_activations = step(
-                    hiddens, mask, activ_cache, num_activations,
-                    tokens_processed, n_features)
+
+                indices = jnp.nonzero(mask)[0]
+                hiddens = hiddens[indices]
+                nonzeros = get_nonzeros(hiddens, max_l0=512)
+                nonzeros = np.asarray(to_cpu(nonzeros.astype(jnp.int32)))
+                hiddens = np.asarray(to_cpu(hiddens.astype(jnp.float16)))
+                # mask = np.asarray(to_cpu(mask))
+                indices = np.asarray(to_cpu(indices))
+                # for i, h in zip(list(jnp.arange(len(hiddens))[mask]), list(hiddens[mask])):
+                #     active_features = np.nonzero(h)[0]
+                #     feature_activations = h[active_features]
+                #     for f, a in zip(active_features, feature_activations):
+                #         activ_cache[int(f)].append((tokens_processed + i, float(a)))
+
+
+                for i, active_features, h in zip(indices, nonzeros, hiddens):
+                    active_features = active_features[active_features != -1]
+                    feature_activations = h[active_features]
+                    for f, a in zip(active_features, feature_activations):
+                        activ_cache[int(f)].append((i + tokens_processed, float(a)))
+                tokens_processed += len(mask)
+                assert i < len(mask)
+                bar.set_postfix(tokens_processed=tokens_processed, tps=tokens_processed / bar.format_dict["elapsed"])
 
                 tokens_processed += len(mask)
                 bar.set_postfix(tokens_processed=tokens_processed, tps=tokens_processed / bar.format_dict["elapsed"])
         except KeyboardInterrupt:
             pass
-        return to_cpu(activ_cache), to_cpu(num_activations), tokens_processed
-    activ_cache, num_activations, tokens_processed = process_tokens(n_batches=n_batches)
-
-    # In[64]:
-
-    rng = 10
-    feature = 12
-    print(num_activations[feature])
-    for i, p in enumerate(activ_cache[feature]):
-        if p == 0:
-            continue
-        tokens = token_table[max(0, p - rng):p+1]["tokens"].to_numpy()
-        print((i * stride, (i + 1) * stride),
-            repr(haver.model.decode(tokens)))
+        return activ_cache, tokens_processed
+    activ_cache, tokens_processed = process_tokens(n_batches=n_batches)
 
     # In[67]:
 
     batches = []
-    for feat, (activs, freqs) in enumerate(zip(tqdm(activ_cache), num_activations)):
-        total_activs = freqs.sum()
-        batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i, activation=np.float16(j * stride), freq=np.float16(f / (tokens_processed / batch_size)))
-                                                for j, (i, f) in enumerate(zip(activs, freqs))],
-                                                schema=pa.schema([
-            ("feature", pa.int32()),
-            ("activation", pa.float16()),
-            ("token", pa.int32()),
-            ("freq", pa.float16()),
-        ])))
+    for feat, all_activs in tqdm(activ_cache.items()):
+        use_list = set()
+        freqs = dict()
+        for st in range(n_strides):
+            lower, upper = stride * st, stride * (st + 1)
+            in_stride = [a for a in all_activs if lower <= a[1] < upper]
+            if not len(in_stride):
+                continue
+            one_choice = random.choice(in_stride)[0]
+            freq = len(in_stride) / tokens_processed
+            for token in range(one_choice-mnt, one_choice+mnt):
+                use_list.add(token)
+                freqs[token] = freq
+        for token, activ in all_activs:
+            if token not in use_list:
+                continue
+            batches.append(pa.RecordBatch.from_pylist([dict(feature=feat,
+                                                            token=token,
+                                                            activation=np.float16(activ),
+                                                            freq=np.float16(freqs[token]))],
+                                                    schema=pa.schema([
+                ("feature", pa.int32()),
+                ("activation", pa.float16()),
+                ("token", pa.int32()),
+                ("freq", pa.float16()),
+            ])))
 
 
     # In[68]:
@@ -184,7 +214,6 @@ sae_config = SAEConfig(
     is_gated=False,
 )
 haver = ModelHaver(model_config=model_config, dataset_config=dataset_config)
-for layer in [8, 12, 16, 20, 24, 28, 4, 10, 18, 26]:
+for layer, revision in [(12, 8)]:
     haver.model.set_layer(layer)
-    for revision in [4, 5, 8]:
-        main(layer, revision, n_batches=1_000)
+    main(layer, revision, n_batches=20)
