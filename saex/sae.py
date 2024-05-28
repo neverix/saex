@@ -342,8 +342,8 @@ class SAE(eqx.Module):
                       last_output: SAEOutput,
                       step: int,
                       key: jax.random.PRNGKey):
-        # assumes adam is the 0th gradient processor
-        get_adam = lambda s: s[0][0]
+        # assumes adam is the 1st gradient processor
+        get_adam = lambda s: s[1][0]
         
         if self.config.project_updates_from_dec:
             def project_away(W_dec_grad):

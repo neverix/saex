@@ -62,7 +62,7 @@ def train(
             n_dimensions=n_features,
             lr=4e-4,  # Higher LR limits the variance explained but can lead to faster decrease in L0
             beta1=0.0,  # Crucial for avoiding dead features
-            beta2=0.99,  # Lower beta2 can lead to a slightly faster decrease in L0
+            beta2=0.999,  # Lower beta2 can lead to a slightly faster decrease in L0
             scheduler_warmup=128,
             scheduler_cycle=max(100_000, train_steps * 2),
             scheduler_multiply=0.1,
@@ -90,9 +90,10 @@ def train(
                 reconstruction_loss_type="mse_batchnorm",
                 project_updates_from_dec=True,
                 death_loss_type="dm_ghost_grads",
+                # death_loss_type="none",
                 death_penalty_threshold=death_penalty_threshold,
                 death_penalty_coefficient=0.25,
-                dead_after=1_000,
+                dead_after=10_000,
                 buffer_size=1_000,
                 restrict_dec_norm="exact",
                 sparsity_tracking_epsilon=0.1,
@@ -114,8 +115,9 @@ def train(
                 max_seq_len=max_seq_len,
             ),
             dataset_config=IterableDatasetConfig(
-                dataset_name="nev/generated-phi-format-text-3",
-                clean_fn=phi_clean_fn,
+                # dataset_name="nev/generated-phi-format-text-3",
+                dataset_name="nev/lamini-openhermes-phigen-v0",
+                # clean_fn=phi_clean_fn,
             ),
             loss_batch_size=16,
             eval_loss_every=eval_loss_every,
@@ -132,15 +134,17 @@ def train(
 
 def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e-6, n_train=4):
     sfcs = np.linspace(min_sfc, max_sfc, n_train)
-    is_recip = True
-    is_gated = False
+    is_recip = False
+    is_gated = True
     train(layer=layer, is_gated=is_gated,
-          sparsity_coefficients=sfcs * (1 if is_recip else 7 * min(1, 1 / ((layer/8) ** 2))) * (1 if is_gated else 3),
+          sparsity_coefficients=sfcs * (2 if is_gated else 3),
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
-          train_steps=100_000,
-          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-8"),
+        #   death_penalty_threshold=1e-13,
+        #   death_penalty_threshold=-1,
+          train_steps=200_000,
+          push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-9"),
           restore=restore
           )
 

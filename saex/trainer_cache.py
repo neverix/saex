@@ -204,7 +204,7 @@ class BufferTrainer(SAEHaver):
               "and cycled every", scheduler_cycle, "iterations")
         n_cycles = int(self.config.train_iterations / scheduler_cycle)
         optimizer = optax.chain(
-            # optax.clip_by_global_norm(1.0),
+            optax.clip_by_global_norm(1.0),
             optax.adam(self.config.lr, b1=self.config.beta1, b2=self.config.beta2),
             optax.scale_by_schedule(
                 optax.join_schedules(
@@ -234,8 +234,8 @@ class BufferTrainer(SAEHaver):
             # SAE state is pretty small and there's no quadratic scaling, so we don't need to shard it as hard
             # (I don't think equinox state can be sharded... StateIndex is not ordered, so tree_flatten won't work)
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
-            opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
-            opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[1][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             
             batch = jax.lax.with_sharding_constraint(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
             (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
@@ -249,8 +249,8 @@ class BufferTrainer(SAEHaver):
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
-            opt_state = eqx.tree_at(lambda o: o[0][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
-            opt_state = eqx.tree_at(lambda o: o[0][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+            opt_state = eqx.tree_at(lambda o: o[1][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             if self.config.ema:
                 def ema_update(ema_params, sae_params):
                     return jax.tree.map(lambda ema, sae: ema * self.config.ema + sae * (1 - self.config.ema),
