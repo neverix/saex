@@ -59,8 +59,8 @@ def get_active(feature, stride_idx, hiddens, mask):
     return jax.lax.scan(scanner, -1, (indices, acts[indices], mask[indices]))[0]
 fun = jax.vmap(jax.vmap(get_active, in_axes=(None, 0, None, None), out_axes=0), in_axes=(0, None, None, None), out_axes=0)
 
-@partial(jax.jit, donate_argnums=(2, 3), static_argnums=(5,))
-def step(hiddens, mask, activ_cache, num_activations, tokens_processed, n_features):
+@partial(jax.jit, donate_argnums=(2, 3, 6,), static_argnums=(5, 7,))
+def step(hiddens, mask, activ_cache, num_activations, tokens_processed, n_features, nearby_activations, nearby):
     actives = fun(
         jnp.arange(n_features), jnp.arange(n_strides),
         hiddens,
@@ -70,12 +70,19 @@ def step(hiddens, mask, activ_cache, num_activations, tokens_processed, n_featur
     probs = probs * (actives != -1)
     choose = jax.random.bernoulli(jax.random.PRNGKey(random.randint(0, 2**32 - 1)),
                                     probs)
+    nearby_activs = jnp.take_along_axis(
+        hiddens[:, :, None, None],
+        actives[None, :, :, None] + jnp.arange(-nearby, nearby + 1),
+        axis=0)[0]
+    nearby_activs = (nearby_activs / stride).astype(jnp.uint8)
     activ_cache = jnp.where(choose, actives + tokens_processed, activ_cache)
+    nearby_activations = jnp.where(choose[..., None], nearby_activs, nearby_activations)
     num_activations += (actives != -1)
-    return activ_cache, num_activations
+    return activ_cache, num_activations, nearby_activations
 
 def main(layer=20, revision=8,
-         n_batches = 1000, tokens_file="tokens"):
+         n_batches = 1000, tokens_file="tokens",
+         nearby=8):
     # In[2]:
 
     os.makedirs("weights/sae", exist_ok=True)
@@ -84,7 +91,6 @@ def main(layer=20, revision=8,
         sae_config=sae_config,
         mesh=haver.mesh,
         sae_restore=sae_path)
-
 
     # In[64]:
 
@@ -103,6 +109,7 @@ def main(layer=20, revision=8,
         n_features = haver_sae.sae.d_hidden
         activ_cache = jnp.zeros((n_features, n_strides), dtype=jnp.int32)
         num_activations = jnp.zeros((n_features, n_strides), dtype=jnp.int32)
+        nearby_activations = jnp.zeros((n_features, n_strides, nearby * 2 + 1), dtype=jnp.uint8)
         # jsae = eqx.filter_jit(lambda s, x: s.encode(x)[1])
         cpu_device = jax.devices("cpu")[0]
         to_cpu = lambda x: np.asarray(jax.device_put(x, cpu_device))
@@ -114,41 +121,48 @@ def main(layer=20, revision=8,
                 activations, model_misc = haver.model(texts)
                 mask = model_misc.get("mask")
                 hiddens = haver_sae.sae.encode(activations)[1]
-                activ_cache, num_activations = step(
+                activ_cache, num_activations, nearby_activations = step(
                     hiddens, mask, activ_cache, num_activations,
-                    tokens_processed, n_features)
+                    tokens_processed, n_features,
+                    nearby_activations, nearby)
 
                 tokens_processed += len(mask)
                 bar.set_postfix(tokens_processed=tokens_processed, tps=tokens_processed / bar.format_dict["elapsed"])
         except KeyboardInterrupt:
             pass
-        return to_cpu(activ_cache), to_cpu(num_activations), tokens_processed
-    activ_cache, num_activations, tokens_processed = process_tokens(n_batches=n_batches)
+        return to_cpu(activ_cache), to_cpu(num_activations), to_cpu(nearby_activations), tokens_processed
+    activ_cache, num_activations, nearby_activations, tokens_processed = process_tokens(n_batches=n_batches)
 
-    # In[64]:
+    # # In[64]:
 
-    rng = 10
-    feature = 12
-    print(num_activations[feature])
-    for i, p in enumerate(activ_cache[feature]):
-        if p == 0:
-            continue
-        tokens = token_table[max(0, p - rng):p+1]["tokens"].to_numpy()
-        print((i * stride, (i + 1) * stride),
-            repr(haver.model.decode(tokens)))
+    # rng = 10
+    # feature = 12
+    # print(num_activations[feature])
+    # for i, p in enumerate(activ_cache[feature]):
+    #     if p == 0:
+    #         continue
+    #     tokens = token_table[max(0, p - rng):p+1]["tokens"].to_numpy()
+    #     print((i * stride, (i + 1) * stride),
+    #         repr(haver.model.decode(tokens)))
 
-    # In[67]:
+    # # In[67]:
 
     batches = []
-    for feat, (activs, freqs) in enumerate(zip(tqdm(activ_cache), num_activations)):
-        total_activs = freqs.sum()
-        batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i, activation=np.float16(j * stride), freq=np.float16(f / (tokens_processed / batch_size)))
-                                                for j, (i, f) in enumerate(zip(activs, freqs))],
+    for feat, (activs, freqs, nearbies) in enumerate(zip(tqdm(activ_cache),
+                                                         num_activations,
+                                                         nearby_activations)):
+        # total_activs = freqs.sum()
+        batches.append(pa.RecordBatch.from_pylist([dict(feature=feat, token=i,
+                                                        activation=np.float16(j * stride),
+                                                        freq=np.float16(f / (tokens_processed / batch_size)),
+                                                        nearby=n.tolist())
+                                                for j, (i, f, n) in enumerate(zip(activs, freqs, nearbies))],
                                                 schema=pa.schema([
             ("feature", pa.int32()),
             ("activation", pa.float16()),
             ("token", pa.int32()),
             ("freq", pa.float16()),
+            ("nearby", pa.list_(pa.uint8()))
         ])))
 
 
@@ -157,6 +171,8 @@ def main(layer=20, revision=8,
     pq_path = f"weights/caches/phi-l{layer}-r{revision}-st{stride}x{n_strides}-activations.parquet"
     table = pa.Table.from_batches(batches)
     pq.write_table(table, pq_path, compression="snappy")
+    os.remove(sae_path)
+
 
 n_features = 3072
 batch_size = 64
@@ -185,11 +201,6 @@ sae_config = SAEConfig(
     is_gated=False,
 )
 haver = ModelHaver(model_config=model_config, dataset_config=dataset_config)
-# for layer in [8, 12, 16, 20, 24, 28, 4, 10, 18, 26]:
-for layer, revision in [(17, 4), (18, 4), (16, 6), (16, 5)]:
+for layer, revision in [(16, 8)]:
     haver.model.set_layer(layer)
-    sae_config = dataclasses.replace(sae_config, is_gated=revision < 6)
-    try:
-        main(layer, revision, n_batches=1_000)
-    except IndexError:
-        pass
+    main(layer, revision, n_batches=10)
