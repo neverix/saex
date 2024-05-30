@@ -39,7 +39,8 @@ def train(
     mp_devices: int = 1,
     cache_size = 2**16,
     cache_batch_size = 256,
-    cache_ratio=1.0,
+    # cache_ratio=0.1,
+    cache_ratio=2.0,
     batch_size = 2048,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
@@ -53,6 +54,7 @@ def train(
     death_penalty_threshold=9e-5,
     push_to_hub=None,
     ema=None,
+    log_texts=False,
 ):
     n_features = 3072
 
@@ -70,6 +72,8 @@ def train(
             save_steps=save_steps,
             use_wandb=(wandb_entity, "saex") if wandb_entity else None,
             log_every=25,
+            # log_every=1,
+            log_texts=log_texts,
             hist_every=100,
             save_path=f"weights/phi-l{layer}{'-gated' if is_gated else ''}.safetensors",
             dry_run_steps=0,
@@ -100,7 +104,7 @@ def train(
                 is_gated=is_gated,
             ),
             sae_restore=restore,
-            cache_every_steps=int(cache_size / batch_size * cache_ratio),
+            cache_every_steps=max(1, int(cache_size / batch_size * cache_ratio)),
             cache_batch_size=cache_batch_size,
             cache_acc=int(cache_size / cache_batch_size / max_seq_len),
             buffer_max_samples=cache_size,
@@ -116,7 +120,10 @@ def train(
             ),
             dataset_config=IterableDatasetConfig(
                 # dataset_name="nev/generated-phi-format-text-3",
-                dataset_name="nev/lamini-openhermes-phigen-v0",
+                # dataset_name="nev/generated-phi-format-text-3",
+                dataset_name="nev/openhermes-2.5-phi-format-text",
+                # dataset_name="nev/openhermes-2.5-lamini-phi-format-text",
+                # dataset_name="nev/lamini-openhermes-phigen-v0",
                 # clean_fn=phi_clean_fn,
             ),
             loss_batch_size=16,
@@ -137,13 +144,15 @@ def main(layer: int = 8, restore: Optional[str] = None, min_sfc=1e-6, max_sfc=3e
     is_recip = False
     is_gated = True
     train(layer=layer, is_gated=is_gated,
-          sparsity_coefficients=sfcs * (2 if is_gated else 3),
+          sparsity_coefficients=sfcs * 3,
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
+        #   death_penalty_threshold=5e-6,
+        #   death_penalty_threshold=5e-5,
         #   death_penalty_threshold=1e-13,
         #   death_penalty_threshold=-1,
-          train_steps=200_000,
+          train_steps=50_000,
           push_to_hub=("nev/phi-3-4k-saex-test", f"l{layer}-test-run-9"),
           restore=restore
           )

@@ -1,6 +1,6 @@
 from scripts.train_phi_sae import main
 import os
-layers = [16, 17, 18, 20, 8, 12, 24, 28, 4, 10, 18, 26]
+layers = [16, 17, 18, 20, 8, 12, 4, 10, 14, 11, 13, 15, 6, 24, 28, 26]
 for layer_idx in range(len(layers)):
 # for layer_idx in range(3, 4):
 # for layer_idx in range(1):

@@ -36,6 +36,7 @@ class BufferTrainerConfig:
     log_every: int = 1
     hist_every: int = 1
     eval_loss_every: int = 1
+    log_texts: bool = False
 
     lr: float = 1e-3
     beta1: float = 0.0
@@ -120,6 +121,9 @@ class BufferCacher(ModelHaver):
 
                     accumulated += n_tokens
                     tokens_processed += n_tokens
+
+                    if self.config.use_wandb and self.config.log_texts:
+                        wandb.log({"texts": wandb.Table(columns=["text"], data=[[x] for x in texts])}, step=iteration)
             
             if iteration < self.config.dry_run_steps:
                 bar.set_description("Caching activations")

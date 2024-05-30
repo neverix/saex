@@ -201,6 +201,8 @@ sae_config = SAEConfig(
     is_gated=False,
 )
 haver = ModelHaver(model_config=model_config, dataset_config=dataset_config)
-for layer, revision in [(16, 8)]:
+for layer, revision in [(10, 4)]:
     haver.model.set_layer(layer)
-    main(layer, revision, n_batches=10)
+    sae_config = dataclasses.replace(sae_config, is_gated=revision < 6)
+    sae_config = dataclasses.replace(sae_config, expansion_factor=32 if revision >= 6 else 16)
+    main(layer, revision, n_batches=1000)
