@@ -58,9 +58,7 @@ class MicrlhfModel(object):
             .at_instances_of(LlamaBlock) \
             .pick_nth_selected(layer) \
             .insert_before(pz.de.TellIntermediate.from_config(tag=tag))
-        self._llama_residuals = pz.de.CollectingSideOutputs.handling(sequential_to_scan(
-            get_residuals
-        ))
+        self._llama_residuals = pz.de.CollectingSideOutputs.handling(get_residuals)
         self._llama_residuals_call = jax.jit(lambda lr, inputs: lr(inputs))
         replaced = \
             self._llama.select() \

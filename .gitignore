@@ -166,3 +166,4 @@ weights/
 # WandB
 wandb/
 nohup.out
+restats
