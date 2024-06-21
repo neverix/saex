@@ -224,16 +224,17 @@ class BufferTrainer(SAEHaver):
         
         @partial(jax.jit, static_argnums=1)
         @partial(jax.value_and_grad, has_aux=True)
-        def loss_fn(sae_params, sae_static, sae_state, batch):
+        def loss_fn(sae_params, sae_static, sae_state, batch, targets):
             sae = eqx.combine(sae_params, sae_static)
-            sae_output, sae_state = sae(batch, sae_state)
+            sae_output, sae_state = sae(batch, targets, sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
-        @partial(jax.jit, donate_argnums=(1, 2, 3, 4), static_argnums=(5, 6))
+        @partial(jax.jit, donate_argnums=(2, 3, 4, 5), static_argnums=(6, 7))
         def train_step(
-            batch, sae_params, ema_params, sae_state, opt_state, sae_static, optimizer, step, key
+            batch, targets, sae_params, ema_params, sae_state, opt_state, sae_static, optimizer, step, key
         ):
             batch = jnp.nan_to_num(batch)
+            targets = jnp.nan_to_num(targets)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             # SAE state is pretty small and there's no quadratic scaling, so we don't need to shard it as hard
             # (I don't think equinox state can be sharded... StateIndex is not ordered, so tree_flatten won't work)
@@ -242,14 +243,15 @@ class BufferTrainer(SAEHaver):
             opt_state = eqx.tree_at(lambda o: o[1][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             
             batch = jax.lax.with_sharding_constraint(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
-            (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch)
+            targets = jax.lax.with_sharding_constraint(targets, jshard.NamedSharding(self.mesh, P("dp", None)))
+            (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch, targets)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             sae = eqx.combine(sae_params, sae_static)
-            stats = sae.get_stats(sae_state, batch, sae_output)
+            stats = sae.get_stats(sae_state, batch, targets, sae_output)
             if not self.config.no_update:
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
-                                                   batch, sae_output, step, key)
+                                                              batch, targets, sae_output, step, key)
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
@@ -277,7 +279,7 @@ class BufferTrainer(SAEHaver):
             
             key, subkey = jax.random.split(key)
             sae_params, ema_params, self.sae_state, opt_state, stats = train_step(
-                batch, sae_params, ema_params, self.sae_state, opt_state,
+                batch, batch, sae_params, ema_params, self.sae_state, opt_state,
                 sae_static, optimizer, iteration, subkey)
 
             if iteration % self.config.log_every == 0:

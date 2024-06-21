@@ -36,6 +36,10 @@ class SAEConfig:
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     
+    norm_input: Literal[None, "wes", "wes-mean", "wes-clip"] = None
+    wes_clip: float = 1e-2
+    anthropic_norm: bool = False
+    
     project_updates_from_dec: bool = True
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
@@ -165,9 +169,22 @@ class SAE(eqx.Module):
     @property
     def is_gated(self):
         return self.config.is_gated
+    
+    def norm_input(self, x: jax.typing.ArrayLike):
+        if self.config.norm_input == "wes":
+            # Wes-style normalization
+            norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True)
+        elif self.config.norm_input == "wes-mean":
+            # batchnorm (bad)
+            norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True).mean()
+        elif self.config.norm_input == "wes-clip":
+            norm_factor = (x.shape[-1] ** 0.5) / jnp.maximum(self.config.wes_clip, jnp.linalg.norm(x, axis=-1, keepdims=True).mean())
+        else:
+            norm_factor = jnp.ones_like(x)
+        return x * norm_factor, norm_factor
 
     def encode(self, activations: jax.Array):
-        inputs = activations
+        inputs, _ = self.norm_input(activations)
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
         pre_relu = inputs @ self.W_enc
@@ -181,12 +198,15 @@ class SAE(eqx.Module):
         return pre_relu, hidden
 
     def forward(self, activations: jax.Array):
+        activations, norm_factor = self.norm_input(activations)
         _, post_relu = self.encode(activations)
         hidden = post_relu
         out = hidden @ self.W_dec + self.b_dec
-        return out
+        return out / norm_factor
 
-    def __call__(self, activations: jax.Array, state=None):
+    def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
+        activations, norm_factor = self.norm_input(activations)
+        targets = targets * norm_factor
         pre_relu, hidden = self.encode(activations)
         active = hidden != 0
         if state is not None:
@@ -201,8 +221,8 @@ class SAE(eqx.Module):
             buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
             state = state.set(self.activated_buffer, buffer)
         sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state)
-        out = hidden @ self.W_dec + self.b_dec
-        reconstruction_loss = self.reconstruction_loss(out, activations)
+        out = (hidden @ self.W_dec + self.b_dec)
+        reconstruction_loss = self.reconstruction_loss(out, targets)
         if state is not None:
             state = state.set(self.avg_loss_sparsity,
                                 sparsity_loss.mean(0) * self.config.sparsity_tracking_epsilon
@@ -212,26 +232,27 @@ class SAE(eqx.Module):
             ) * sparsity_loss.sum(-1).mean()
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if self.is_gated:
-            g_out = (jax.nn.relu(pre_relu) * self.s) @ jax.lax.stop_gradient(self.W_dec) + jax.lax.stop_gradient(self.b_dec)
-            gated_loss = self.reconstruction_loss(g_out, activations)
+            sg_gated = (lambda x: x) if self.config.anthropic_norm else jax.lax.stop_gradient
+            g_out = (jax.nn.relu(pre_relu) * self.s) @ sg_gated(self.W_dec) + sg_gated(self.b_dec)
+            gated_loss = self.reconstruction_loss(g_out, targets)
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()
         if state is not None:  # we can only tell if a neuron is dead if we know if it was alive in the first place
-            death_loss = self.compute_death_loss(state, activations, out, pre_relu)
+            death_loss = self.compute_death_loss(state, targets, out, pre_relu, norm_factor)
             losses = {**losses, "death": death_loss}
             loss = loss + death_loss.mean() * self.config.death_penalty_coefficient
         output = SAEOutput(
-            output=out,
+            output=out / norm_factor,
             loss=loss,
             losses=losses,
             activations={"pre_relu": pre_relu, "hidden": hidden},
         )
         if state is None:
-            return output 
+            return output
         else:
             return output, state
 
-    def sparsity_loss(self, activations, state):
+    def sparsity_loss_base(self, activations, state):
         if self.config.sparsity_loss_type == "recip":
             step = state.get(self.num_steps)
             steps, values = map(jnp.asarray, zip(*self.config.recip_schedule))
@@ -249,7 +270,13 @@ class SAE(eqx.Module):
             return jnp.tanh(activations)
         else:
             raise ValueError(f"Unknown sparsity loss type: \"{self.config.sparsity_loss_type}\"")
-    
+
+    def sparsity_loss(self, activations, state):
+        losses = self.sparsity_loss_base(activations, state)
+        if self.config.anthropic_norm:
+            return losses * jnp.linalg.norm(self.W_dec, axis=-1)
+        return losses
+
     def reconstruction_loss(self, output, target, eps=1e-6):
         if self.config.reconstruction_loss_type == "mse":
             return (output - target) ** 2
@@ -261,7 +288,7 @@ class SAE(eqx.Module):
         else:
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
     
-    def compute_death_loss(self, state, activations, reconstructions, pre_relu, eps=1e-10):
+    def compute_death_loss(self, state, targets, reconstructions, pre_relu, norm_factor, eps=1e-10):
         dead = state.get(self.time_since_fired) > self.config.dead_after
         if self.get_death_penalty_threshold(state) is not None:
             dead = dead | (
@@ -286,7 +313,7 @@ class SAE(eqx.Module):
             post_exp = jnp.where(dead, jnp.exp(pre_relu) * self.s, 0)
             ghost_recon = post_exp @ self.W_dec
             
-            residual = activations - reconstructions
+            residual = targets - reconstructions
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1)
             diff_norm = jnp.linalg.norm(residual, axis=-1)
             ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
@@ -294,7 +321,7 @@ class SAE(eqx.Module):
             # same thing
             ghost_loss = self.reconstruction_loss(ghost_recon, jax.lax.stop_gradient(residual))
             # ghost_loss = jnp.square(ghost_recon - jax.lax.stop_gradient(residual))
-            recon_loss = self.reconstruction_loss(reconstructions, activations)
+            recon_loss = self.reconstruction_loss(reconstructions, targets)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
             loss = jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
@@ -318,7 +345,7 @@ class SAE(eqx.Module):
             # ghost_recon = post_exp @ jax.lax.stop_gradient(self.W_dec)
             ghost_recon = post_exp @ self.W_dec
             
-            residual = jax.lax.stop_gradient(activations - reconstructions)
+            residual = jax.lax.stop_gradient(targets - reconstructions)
             ghost_norm = jnp.linalg.norm(ghost_recon, axis=-1, keepdims=True)
             diff_norm = jnp.linalg.norm(residual, axis=-1, keepdims=True)
             ghost_recon = ghost_recon * (jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps)))
@@ -328,7 +355,7 @@ class SAE(eqx.Module):
             
             # ghost_loss = self.reconstruction_loss(ghost_recon, residual)
             ghost_loss = (ghost_recon - residual) ** 2
-            recon_loss = self.reconstruction_loss(reconstructions, activations)
+            recon_loss = self.reconstruction_loss(reconstructions, targets)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
             return (ghost_loss).mean(-1) * jnp.mean(dead.astype(jnp.float32))
@@ -339,13 +366,14 @@ class SAE(eqx.Module):
                       state: eqx.nn.State,
                       opt_state,
                       last_input: Float[Array, "b f"],
+                      last_target: Float[Array, "b f"],
                       last_output: SAEOutput,
                       step: int,
                       key: jax.random.PRNGKey):
         # assumes adam is the 1st gradient processor
         get_adam = lambda s: s[1][0]
         
-        if self.config.project_updates_from_dec:
+        if self.config.project_updates_from_dec and not self.config.anthropic_norm:
             def project_away(W_dec_grad):
                 return W_dec_grad - jnp.einsum("h f, h -> h f",
                                                self.W_dec,
@@ -362,9 +390,9 @@ class SAE(eqx.Module):
         # at the end of our first step, compute mean
         def adjust_mean(b_dec, opt_state):
             if self.config.decoder_bias_init_method == "mean":
-                b_dec = b_dec + jnp.mean(last_input - last_output.output, axis=0)
+                b_dec = b_dec + jnp.mean(last_target - last_output.output, axis=0)
             elif self.config.decoder_bias_init_method == "geom_median":
-                b_dec = b_dec + geometric_median(last_input - last_output.output)
+                b_dec = b_dec + geometric_median(last_target - last_output.output)
             opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))            
             opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).nu.b_dec))           
             return b_dec, opt_state
@@ -425,6 +453,8 @@ class SAE(eqx.Module):
         return updated, state, opt_state
     
     def normalize_w_dec(self, w_dec, eps=1e-6):
+        if self.config.anthropic_norm:
+            return w_dec
         if self.config.restrict_dec_norm == "exact":
             return w_dec / (eps + jnp.linalg.norm(w_dec, axis=-1, keepdims=True))
         elif self.config.restrict_dec_norm == "lte":
@@ -432,7 +462,9 @@ class SAE(eqx.Module):
         return w_dec
         
     
-    def get_stats(self, state: eqx.nn.State, last_input: jax.Array, last_output: SAEOutput, eps=1e-12):
+    def get_stats(self, state: eqx.nn.State,
+                  last_input: jax.Array, last_target: jax.typing.ArrayLike, last_output: SAEOutput,
+                  eps=1e-12):
         num_steps = state.get(self.num_steps)
         checkify(num_steps > 0, "num_steps must be positive")
         bias_corr = 1 - (1 - self.config.sparsity_tracking_epsilon) ** num_steps
