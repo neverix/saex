@@ -41,6 +41,7 @@ class SAEConfig:
     anthropic_norm: bool = False
     
     project_updates_from_dec: bool = True
+    project_grads_from_dec: bool = False
     restrict_dec_norm: Literal["none", "exact", "lte"] = "exact"
     
     is_gated: bool = False
@@ -362,6 +363,22 @@ class SAE(eqx.Module):
         else:
             raise ValueError(f"Unknown death loss type: \"{self.config.death_loss_type}\"")
 
+    def project(self, updates: PyTree[Float]):
+        def project_away(W_dec_grad):
+            return W_dec_grad - jnp.einsum("h f, h -> h f",
+                                            self.W_dec,
+                                            jnp.einsum("h f, h f -> h",
+                                                        self.W_dec,
+                                                        W_dec_grad))
+        updates = eqx.tree_at(lambda update: update.W_dec, updates,
+                                replace_fn=project_away)
+        return updates
+
+    def update_gradients(self, grads: PyTree[Float], state: eqx.nn.State, key: jax.random.PRNGKey):
+        if self.config.project_grads_from_dec and not self.config.anthropic_norm:
+            grads = self.project(grads)
+        return grads
+
     def apply_updates(self, updates: PyTree[Float],
                       state: eqx.nn.State,
                       opt_state,
@@ -374,16 +391,9 @@ class SAE(eqx.Module):
         get_adam = lambda s: s[1][0]
         
         if self.config.project_updates_from_dec and not self.config.anthropic_norm:
-            def project_away(W_dec_grad):
-                return W_dec_grad - jnp.einsum("h f, h -> h f",
-                                               self.W_dec,
-                                               jnp.einsum("h f, h f -> h",
-                                                          self.W_dec,
-                                                          W_dec_grad))
-            updates = eqx.tree_at(lambda update: update.W_dec, updates,
-                                  replace_fn=project_away)
+            updates = self.project(updates)
         updated = eqx.apply_updates(self, updates)
-        
+
         w_dec_selector = lambda x: x.W_dec
         updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
         

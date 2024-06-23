@@ -249,9 +249,11 @@ class BufferTrainer(SAEHaver):
             sae = eqx.combine(sae_params, sae_static)
             stats = sae.get_stats(sae_state, batch, targets, sae_output)
             if not self.config.no_update:
+                k1, k2 = jax.random.split(key)
+                grad = sae.update_gradients(sae, sae_state, k1)
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
-                                                              batch, targets, sae_output, step, key)
+                                                              batch, targets, sae_output, step, k2)
                 sae_params, _ = eqx.partition(sae, is_trainable)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
