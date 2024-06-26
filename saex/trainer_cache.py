@@ -250,7 +250,7 @@ class BufferTrainer(SAEHaver):
             stats = sae.get_stats(sae_state, batch, targets, sae_output)
             if not self.config.no_update:
                 k1, k2 = jax.random.split(key)
-                grad = sae.update_gradients(sae, sae_state, k1)
+                grad = sae.update_gradients(grad, sae_state, k1)
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
                                                               batch, targets, sae_output, step, k2)

@@ -10,6 +10,7 @@ scripts/download_jb_saes.sh
 # Download Gemma 2B and Phi-3 mini
 mkdir -p weights
 wget -c 'https://huggingface.co/mlabonne/gemma-2b-GGUF/resolve/main/gemma-2b.Q8_0.gguf?download=true' -O weights/gemma-2b.gguf
+wget -c 'https://huggingface.co/mlabonne/gemma-2b-GGUF/resolve/main/gemma-2b.Q8_0.gguf?download=true' -O weights/gemma-2b.gguf
 wget 'https://huggingface.co/SanctumAI/Phi-3-mini-4k-instruct-GGUF/resolve/main/phi-3-mini-4k-instruct.fp16.gguf?download=true' -O weights/phi-3-16.gguf
 # Generate data for a toy model
 JAX_PLATFORMS=cpu python -m saex.toy_models

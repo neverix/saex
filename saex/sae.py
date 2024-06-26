@@ -179,7 +179,7 @@ class SAE(eqx.Module):
             # batchnorm (bad)
             norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True).mean()
         elif self.config.norm_input == "wes-clip":
-            norm_factor = (x.shape[-1] ** 0.5) / jnp.maximum(self.config.wes_clip, jnp.linalg.norm(x, axis=-1, keepdims=True).mean())
+            norm_factor = (x.shape[-1] ** 0.5) / jnp.maximum(self.config.wes_clip, jnp.linalg.norm(x, axis=-1, keepdims=True))
         else:
             norm_factor = jnp.ones_like(x)
         return x * norm_factor, norm_factor

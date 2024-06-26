@@ -21,6 +21,7 @@ class MicrlhfModelConfig:
     tokenizer_path: os.PathLike
     gguf_path: os.PathLike
     layer: int
+    sae_type: Literal["residual", "attn_out"] = "residual"
     max_seq_len: int = 512
     device_map: str = "auto:mp=2"
     use_flash: bool = False
@@ -30,6 +31,27 @@ class MicrlhfModelConfig:
     @property
     def model_class(self) -> type:
         return MicrlhfModel
+
+
+@pz.pytree_dataclass
+class SideInput(pz.Layer):
+    value: pz.de.SideInputRequest[pz.nx.NamedArrayBase]
+
+    @classmethod
+    def from_config(cls, tag: str):
+        return cls(pz.de.SideInputRequest(tag))
+
+    def __call__(self, inputs):
+        return self.value.ask()
+
+
+def remove_head(model):
+    model = model.select() \
+        .at_instances_of(pz.nn.EmbeddingDecode) \
+        .apply(lambda _: pz.nn.Identity())
+    model = model.select().at_instances_of(pz.nn.RMSLayerNorm)
+    model = model.pick_nth_selected(model.count() - 1).apply(lambda _: pz.nn.Identity())
+    return model
 
 
 class MicrlhfModel(object):
@@ -53,46 +75,93 @@ class MicrlhfModel(object):
         self.sharding = jshard.NamedSharding(self.mesh, jshard.PartitionSpec("dp", None))
 
     def set_layer(self, layer):
-        tag = f"residual-{layer}"
-        get_residuals = self._llama.select() \
-            .at_instances_of(LlamaBlock) \
-            .pick_nth_selected(layer) \
-            .insert_before(pz.de.TellIntermediate.from_config(tag=tag))
-        self._llama_residuals = pz.de.CollectingSideOutputs.handling(get_residuals)
-        self._llama_residuals_call = jax.jit(lambda lr, inputs: lr(inputs))
-        replaced = \
-            self._llama.select() \
-            .at_instances_of(LlamaBlock) \
-            .apply_with_selected_index(
-                lambda i, x: x if i >= layer else pz.nn.Identity()
-            ) \
-            .select() \
-            .at_instances_of(pz.nn.EmbeddingLookup) \
-            .apply(lambda _: pz.nn.Identity())
-        if self.config.from_type == "gemma":
-            replaced = replaced.select().at_instances_of(pz.nn.ConstantRescale
-                                                         ).pick_nth_selected(0).apply(lambda _: pz.nn.Identity())
-        self._llama_replace = sequential_to_scan(replaced)
-        self._llama_replace_call = jax.jit(
-            (lambda sae_s, sae_d, inputs, lr, hiddens:
-                lr(replace(inputs, tokens=
-                           pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding")))),
-            static_argnums=0)
+        if self.config.sae_type == "residual":
+            tag = f"residual-{layer}"
+            get_residuals = self._llama.select() \
+                .at_instances_of(LlamaBlock) \
+                .pick_nth_selected(layer) \
+                .insert_before(pz.de.TellIntermediate.from_config(tag=tag))
+            self._getter = pz.de.CollectingSideOutputs.handling(get_residuals)
+            get_residuals_fast = self._llama.select() \
+                .at_instances_of(LlamaBlock) \
+                .apply_with_selected_index(
+                    lambda i, x: x if i <= layer else pz.nn.Identity()
+                )
+            self._value = remove_head(get_residuals_fast)
+            self._value_call = jax.jit(lambda lr, inputs: lr(inputs))
+            
+            self._value_call = jax.jit(lambda lr, inputs: lr(inputs)[1][0].value)
+            self._value = self._getter
+            
+            self._getter_call = jax.jit(lambda lr, inputs: lr(inputs))
+            replaced = \
+                self._llama.select() \
+                .at_instances_of(LlamaBlock) \
+                .apply_with_selected_index(
+                    lambda i, x: x if i >= layer else pz.nn.Identity()
+                ) \
+                .select() \
+                .at_instances_of(pz.nn.EmbeddingLookup) \
+                .apply(lambda _: pz.nn.Identity())
+            if self.config.from_type == "gemma":
+                replaced = replaced.select().at_instances_of(pz.nn.ConstantRescale
+                                                            ).pick_nth_selected(0).apply(lambda _: pz.nn.Identity())
+            self._setter = sequential_to_scan(replaced)
+            self._setter_call = jax.jit(
+                (lambda sae_s, sae_d, inputs, lr, hiddens:
+                    lr(replace(inputs, tokens=
+                            pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding")))),
+                static_argnums=0)
+        elif self.config.sae_type == "attn_out":
+            attention_cls = pz.nn.Attention
+            tag = f"attn_out-{layer}"
+            get_attns = self._llama.select() \
+                .at_instances_of(pz.nn.Residual) \
+                .apply_with_selected_index(
+                    lambda i, x: (x.delta if i == layer * 2 else x) if i <= layer * 2 else pz.nn.Identity()
+                )
+            get_attns = remove_head(get_attns)
+            get_residuals = self._llama.select() \
+                .at_instances_of(attention_cls) \
+                .pick_nth_selected(layer) \
+                .apply(lambda x: pz.nn.Sequential([x, pz.de.TellIntermediate.from_config(tag=tag)]))
+            self._getter = pz.de.CollectingSideOutputs.handling(get_residuals)
+            self._value_call = jax.jit(lambda la, inputs: la(inputs))
+            self._value = get_attns
+            
+            self._value_call = jax.jit(lambda la, inputs: la(inputs)[1][0].value)
+            self._value = self._getter
+            
+            self._getter_call = jax.jit(lambda la, inputs: la(inputs))
+            replaced = \
+                self._llama.select() \
+                .at_instances_of(attention_cls) \
+                .pick_nth_selected(layer) \
+                .apply(
+                    lambda _: SideInput.from_config(tag)
+                )
+            self._setter = pz.de.WithSideInputsFromInputTuple.handling(replaced, [tag])
+            self._setter_call = jax.jit(
+                (lambda sae_s, sae_d, inputs, la, hiddens:
+                    la((inputs, pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding"),))),
+                static_argnums=0)
+        else:
+            raise ValueError(f"Invalid sae_type: {self.config.sae_type}")
 
     def __call__(self, texts: List[str]):
         inputs, mask = self.encode_texts(texts)
-        hidden_states = self._llama_residuals_call(self._llama_residuals, inputs)[1][0].value
+        hidden_states = self._value_call(self._value, inputs)
         hidden_states = hidden_states.untag("batch", "seq", "embedding").data_array
 
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
 
     def eval_loss(self, texts, autoencoder):
         inputs, mask = self.encode_texts(texts)
-        logits, (hidden_states,) = self._llama_residuals_call(self._llama_residuals, inputs)
+        logits, (hidden_states,) = self._getter_call(self._getter, inputs)
         hidden_states = hidden_states.value.untag("batch", "seq", "embedding").data_array
         sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
-        logits_reconstructed = self._llama_replace_call(
-            sae_static, sae_params, inputs, self._llama_replace, hidden_states)
+        logits_reconstructed = self._setter_call(
+            sae_static, sae_params, inputs, self._setter, hidden_states)
 
         mask = pz.nx.wrap(mask.reshape(inputs.tokens.data_array.shape), *inputs.tokens.named_axes.keys())
         loss = self.loss_fn(logits, inputs, mask)

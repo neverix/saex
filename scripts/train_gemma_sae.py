@@ -23,6 +23,7 @@ def train(
     eval_loss_every=100,
     restore = False,
     wandb_entity = "neverix",
+    sae_type = "residual",
     layer = 12,
     is_gated: bool = True,
     use_recip=False,
@@ -56,7 +57,7 @@ def train(
                 recip_schedule = ((1e10, 0.1),),
                 sparsity_coefficient=sparsity_coefficient,
                 batch_size=batch_size,
-                expansion_factor=64,
+                expansion_factor=16,
                 use_encoder_bias=True,
                 remove_decoder_bias=False,
                 encoder_init_method="orthogonal",
@@ -90,7 +91,8 @@ def train(
                 layer=layer,
                 max_seq_len=max_seq_len,
                 from_type="gemma",
-                load_eager=True
+                load_eager=True,
+                sae_type=sae_type,
             ),
             dataset_config=IterableDatasetConfig(
                 dataset_name="HuggingFaceFW/fineweb",
@@ -108,7 +110,7 @@ def train(
     train_main(configs)
 
 
-def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5e-5, n_train=4):
+def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5e-5, n_train=4, sae_type="residual"):
     sfcs = np.linspace(min_sfc, max_sfc, n_train)
     is_recip = False
     is_gated = True
@@ -116,10 +118,11 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           sparsity_coefficients=sfcs,
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
-          death_penalty_threshold=5e-7,  # <= 70 (L0) / 90k (features)
+          death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
           train_steps=150_000,
-          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-3"),
-          restore=restore
+          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-5"),
+          restore=restore,
+          sae_type=sae_type,
           )
 
 
