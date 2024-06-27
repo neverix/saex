@@ -36,8 +36,8 @@ class SAEConfig:
     decoder_init_method: Literal["kaiming", "orthogonal", "pseudoinverse"] = "kaiming"
     decoder_bias_init_method: Literal["zeros", "mean", "geom_median"] = "geom_median"
     
-    norm_input: Literal[None, "wes", "wes-mean", "wes-clip"] = None
-    wes_clip: float = 1e-2
+    norm_input: Literal[None, "wes", "wes-mean", "wes-clip", "wes-mean-fixed"] = None
+    wes_clip: tuple[float, float] = (1e-2, 100)
     anthropic_norm: bool = False
     
     project_updates_from_dec: bool = True
@@ -83,12 +83,14 @@ class SAE(eqx.Module):
     b_gate: jax.Array
     W_dec: jax.Array
     b_dec: jax.Array
+    mean_norm: jax.Array
     
     time_since_fired: eqx.nn.StateIndex
     num_steps: eqx.nn.StateIndex
     avg_loss_sparsity: eqx.nn.StateIndex
     avg_l0: eqx.nn.StateIndex
     activated_buffer: eqx.nn.StateIndex
+    ds_mean_norm: eqx.nn.StateIndex
 
     def __init__(self, config, mesh: jshard.Mesh, key=None):        
         if key is None:
@@ -162,6 +164,8 @@ class SAE(eqx.Module):
                                                   device=state_sharding["avg_l0"]))
         self.activated_buffer = eqx.nn.StateIndex(jnp.zeros((self.config.buffer_size, self.d_hidden),
                                                             device=state_sharding["activated_buffer"]))
+        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(1.0))
+        self.mean_norm = jnp.array(1.0)
     
     @property
     def param_dtype(self):
@@ -179,7 +183,9 @@ class SAE(eqx.Module):
             # batchnorm (bad)
             norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True).mean()
         elif self.config.norm_input == "wes-clip":
-            norm_factor = (x.shape[-1] ** 0.5) / jnp.maximum(self.config.wes_clip, jnp.linalg.norm(x, axis=-1, keepdims=True))
+            norm_factor = (x.shape[-1] ** 0.5) / jnp.clip(jnp.linalg.norm(x, axis=-1, keepdims=True), *self.config.wes_clip)
+        elif self.config.norm_input == "wes-mean-fixed":
+            norm_factor = (x.shape[-1] ** 0.5) / self.mean_norm
         else:
             norm_factor = jnp.ones_like(x)
         return x * norm_factor, norm_factor
@@ -206,6 +212,12 @@ class SAE(eqx.Module):
         return out / norm_factor
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
+        mean_norm = jnp.mean(jnp.linalg.norm(activations, axis=-1).astype(jnp.float32))
+        if state is not None:
+            t = state.get(self.num_steps)
+            state = state.set(self.ds_mean_norm,
+                              state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
+
         activations, norm_factor = self.norm_input(activations)
         targets = targets * norm_factor
         pre_relu, hidden = self.encode(activations)
@@ -397,6 +409,8 @@ class SAE(eqx.Module):
         w_dec_selector = lambda x: x.W_dec
         updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
         
+        updated = eqx.tree_at(lambda x: x.mean_norm, updated, state.get(self.ds_mean_norm))
+        
         # at the end of our first step, compute mean
         def adjust_mean(b_dec, opt_state):
             if self.config.decoder_bias_init_method == "mean":
@@ -516,13 +530,15 @@ class SAE(eqx.Module):
                 "W_dec": P(None, None),
                 "b_dec": P(None),
                 "s_gate": P(None),
-                "b_gate": P(None)
+                "b_gate": P(None),
+                "mean_norm": P(),
             }, {
                 "time_since_fired": P(None),
                 "num_steps": P(),
                 "avg_loss_sparsity": P(None),
                 "avg_l0": P(None),
-                "activated_buffer": P(None, None)
+                "activated_buffer": P(None, None),
+                "ds_mean_norm": P(),
             }
         else:
             spec, state_spec = {
@@ -532,13 +548,15 @@ class SAE(eqx.Module):
                 "W_dec": P("mp", None),
                 "b_dec": P(None),
                 "s_gate": P("mp"),
-                "b_gate": P("mp")
+                "b_gate": P("mp"),
+                "mean_norm": P(),
             }, {
                 "time_since_fired": P("mp"),
                 "num_steps": P(),
                 "avg_loss_sparsity": P("mp"),
                 "avg_l0": P("mp"),
-                "activated_buffer": P(None, "mp")
+                "activated_buffer": P(None, "mp"),
+                "ds_mean_norm": P(),
             }
         return spec, state_spec
 
@@ -568,7 +586,8 @@ class SAE(eqx.Module):
             "W_dec": self.W_dec,
             "b_dec": self.b_dec,
             "s_gate": self.s_gate,
-            "b_gate": self.b_gate
+            "b_gate": self.b_gate,
+            "mean_norm": self.mean_norm,
         }
         state_dict = {k: v.astype(save_dtype) for k, v in state_dict.items()}
         save_file(state_dict, weights_path)
