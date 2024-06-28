@@ -38,6 +38,7 @@ class SAEConfig:
     
     norm_input: Literal[None, "wes", "wes-mean", "wes-clip", "wes-mean-fixed"] = None
     wes_clip: tuple[float, float] = (1e-2, 100)
+    wes_ema: float = 0.99
     anthropic_norm: bool = False
     
     project_updates_from_dec: bool = True
@@ -164,12 +165,18 @@ class SAE(eqx.Module):
                                                   device=state_sharding["avg_l0"]))
         self.activated_buffer = eqx.nn.StateIndex(jnp.zeros((self.config.buffer_size, self.d_hidden),
                                                             device=state_sharding["activated_buffer"]))
-        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(1.0))
-        self.mean_norm = jnp.array(1.0)
+        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(1.0, dtype=self.mean_norm_dtype))
+        self.mean_norm = jnp.array(1.0, dtype=self.mean_norm_dtype)
     
     @property
     def param_dtype(self):
         return getattr(jnp, self.config.param_dtype)
+    
+    @property
+    def mean_norm_dtype(self):
+        # return self.param_dtype
+        # return jnp.float32
+        return jnp.float16
     
     @property
     def is_gated(self):
@@ -181,6 +188,7 @@ class SAE(eqx.Module):
             norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True)
         elif self.config.norm_input == "wes-mean":
             # batchnorm (bad)
+            # jax.debug.print("{}", jnp.linalg.norm(x, axis=-1, keepdims=True).mean())
             norm_factor = (x.shape[-1] ** 0.5) / jnp.linalg.norm(x, axis=-1, keepdims=True).mean()
         elif self.config.norm_input == "wes-clip":
             norm_factor = (x.shape[-1] ** 0.5) / jnp.clip(jnp.linalg.norm(x, axis=-1, keepdims=True), *self.config.wes_clip)
@@ -191,7 +199,7 @@ class SAE(eqx.Module):
         return x * norm_factor, norm_factor
 
     def encode(self, activations: jax.Array):
-        inputs, _ = self.norm_input(activations)
+        inputs, norm_factor = self.norm_input(activations)
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
         pre_relu = inputs @ self.W_enc
@@ -202,25 +210,25 @@ class SAE(eqx.Module):
         if self.config.is_gated:
             # hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
             hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
-        return pre_relu, hidden
+        return inputs, pre_relu, hidden, norm_factor
 
     def forward(self, activations: jax.Array):
-        activations, norm_factor = self.norm_input(activations)
-        _, post_relu = self.encode(activations)
+        _, _, post_relu, norm_factor = self.encode(activations)
         hidden = post_relu
         out = hidden @ self.W_dec + self.b_dec
         return out / norm_factor
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
-        mean_norm = jnp.mean(jnp.linalg.norm(activations, axis=-1).astype(jnp.float32))
-        if state is not None:
-            t = state.get(self.num_steps)
-            state = state.set(self.ds_mean_norm,
-                              state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
+        if self.config.norm_input == "wes-mean-fixed":
+            mean_norm = jnp.linalg.norm(x, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean()
+            if state is not None:
+                # t = state.get(self.num_steps)
+                # state = state.set(self.ds_mean_norm,
+                #                   state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
+                state = state.set(self.ds_mean_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema))
 
-        activations, norm_factor = self.norm_input(activations)
+        activations, pre_relu, hidden, norm_factor = self.encode(activations)
         targets = targets * norm_factor
-        pre_relu, hidden = self.encode(activations)
         active = hidden != 0
         if state is not None:
             state = state.set(self.time_since_fired,
@@ -409,7 +417,8 @@ class SAE(eqx.Module):
         w_dec_selector = lambda x: x.W_dec
         updated = eqx.tree_at(w_dec_selector, updated, replace_fn=self.normalize_w_dec)
         
-        updated = eqx.tree_at(lambda x: x.mean_norm, updated, state.get(self.ds_mean_norm))
+        if self.config.norm_input == "wes-mean-fixed":
+            updated = eqx.tree_at(lambda x: x.mean_norm, updated, state.get(self.ds_mean_norm))
         
         # at the end of our first step, compute mean
         def adjust_mean(b_dec, opt_state):
@@ -505,6 +514,7 @@ class SAE(eqx.Module):
                                       * (last_output.output - last_output.output.mean(axis=0)) / (last_output.output.std(axis=0) + eps)
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
+            mean_norm=state.get(self.ds_mean_norm),
         )
     
     def get_death_penalty_threshold(self, state):

@@ -85,13 +85,13 @@ class MicrlhfModel(object):
             get_residuals_fast = self._llama.select() \
                 .at_instances_of(LlamaBlock) \
                 .apply_with_selected_index(
-                    lambda i, x: x if i <= layer else pz.nn.Identity()
+                    lambda i, x: x if i < layer else pz.nn.Identity()
                 )
             self._value = remove_head(get_residuals_fast)
             self._value_call = jax.jit(lambda lr, inputs: lr(inputs))
             
-            self._value_call = jax.jit(lambda lr, inputs: lr(inputs)[1][0].value)
-            self._value = self._getter
+            #self._value_call = jax.jit(lambda lr, inputs: lr(inputs)[1][0].value)
+            #self._value = self._getter
             
             self._getter_call = jax.jit(lambda lr, inputs: lr(inputs))
             replaced = \
@@ -129,8 +129,8 @@ class MicrlhfModel(object):
             self._value_call = jax.jit(lambda la, inputs: la(inputs))
             self._value = get_attns
             
-            self._value_call = jax.jit(lambda la, inputs: la(inputs)[1][0].value)
-            self._value = self._getter
+            #self._value_call = jax.jit(lambda la, inputs: la(inputs)[1][0].value)
+            #self._value = self._getter
             
             self._getter_call = jax.jit(lambda la, inputs: la(inputs))
             replaced = \

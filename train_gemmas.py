@@ -6,7 +6,7 @@ for layer_idx in range(len(layers)):
     restore = None  # if layer_idx == 0 else f"weights/phi-l{layers[layer_idx-1]}-gated.safetensors"
     # fn = lambda x: x * ((layer / 12) ** 2)
     fn = lambda x: x
-    for s in (1e-5,):
+    for s in (3e-5,):
         for sae_type in ("residual", "attn_out"):
             min_sfc, max_sfc = fn(s), fn(s)
             # min_sfc, max_sfc = fn(1e-5), fn(1e-5)

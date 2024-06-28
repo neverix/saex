@@ -68,6 +68,7 @@ def train(
                 death_loss_type="dm_ghost_grads",
                 anthropic_norm=True,
                 # norm_input="wes-clip",
+                # norm_input="wes",
                 # norm_input="wes-mean",
                 norm_input="wes-mean-fixed",
                 # wes_clip=(0.25, 0.25),
