@@ -1,6 +1,7 @@
 from itertools import chain
 from typing import List, Union
 import wandb
+import jax
 import gc
 
 import jax_smi
@@ -50,5 +51,6 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
     except:
         cleanup()
         gc.collect()
+        jax.distributed.shutdown()
         raise
     cleanup()

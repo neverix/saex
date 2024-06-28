@@ -1,3 +1,4 @@
+import jax
 import fire
 import numpy as np
 import jax.numpy as jnp
@@ -131,4 +132,5 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
 
 
 if __name__ == "__main__":
+    jax.distributed.initialize()
     fire.Fire(main)
