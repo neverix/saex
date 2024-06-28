@@ -176,7 +176,8 @@ class SAE(eqx.Module):
     def mean_norm_dtype(self):
         # return self.param_dtype
         # return jnp.float32
-        return jnp.float16
+        # return jnp.float16
+        return jnp.bfloat16
     
     @property
     def is_gated(self):
@@ -220,7 +221,7 @@ class SAE(eqx.Module):
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
         if self.config.norm_input == "wes-mean-fixed":
-            mean_norm = jnp.linalg.norm(x, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean()
+            mean_norm = jnp.linalg.norm(activations, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean()
             if state is not None:
                 # t = state.get(self.num_steps)
                 # state = state.set(self.ds_mean_norm,
