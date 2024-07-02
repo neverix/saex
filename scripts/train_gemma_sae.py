@@ -126,12 +126,11 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
           train_steps=150_000,
-          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-test-run-5"),
+          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-{sae_type}-test-run-5"),
           restore=restore,
           sae_type=sae_type,
           )
 
 
 if __name__ == "__main__":
-    jax.distributed.initialize()
     fire.Fire(main)

@@ -1,12 +1,11 @@
-from scripts.train_phi_sae import main
 import os
-layers = [12, 14, 16, 13, 15, 10, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1][2:]
+layers = [12, 14, 16, 13, 15, 10, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1][5:]
 for layer_idx in range(len(layers)):
     layer = layers[layer_idx]
     restore = None  # if layer_idx == 0 else f"weights/phi-l{layers[layer_idx-1]}-gated.safetensors"
     # fn = lambda x: x * ((layer / 12) ** 2)
     fn = lambda x: x
-    for s, sae_type in ((3e-5, "residual"), (1e-5, "attn_out"))[0 if layer_idx > 0 else 1:]:
+    for s, sae_type in ((3e-5, "residual"), (2e-5, "attn_out"))[1 if layer_idx == 0 else 0:]:
         min_sfc, max_sfc = fn(s), fn(s)
         # min_sfc, max_sfc = fn(1e-5), fn(1e-5)
         min_sfc, max_sfc = min_sfc, min_sfc

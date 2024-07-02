@@ -22,6 +22,7 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
                 pass
 
     try:
+        jax.distributed.initialize()
         jax_smi.initialise_tracking()
         config = configs[0]
         if config.use_wandb:
