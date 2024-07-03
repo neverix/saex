@@ -39,6 +39,7 @@ class SAEConfig:
     norm_input: Literal[None, "wes", "wes-mean", "wes-clip", "wes-mean-fixed"] = None
     wes_clip: tuple[float, float] = (1e-2, 100)
     wes_ema: float = 0.99
+    min_norm: float = 16.25
     anthropic_norm: bool = False
     
     project_updates_from_dec: bool = True
@@ -165,8 +166,8 @@ class SAE(eqx.Module):
                                                   device=state_sharding["avg_l0"]))
         self.activated_buffer = eqx.nn.StateIndex(jnp.zeros((self.config.buffer_size, self.d_hidden),
                                                             device=state_sharding["activated_buffer"]))
-        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(1.0, dtype=self.mean_norm_dtype))
-        self.mean_norm = jnp.array(1.0, dtype=self.mean_norm_dtype)
+        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype))
+        self.mean_norm = jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype)
     
     @property
     def param_dtype(self):
@@ -221,12 +222,12 @@ class SAE(eqx.Module):
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
         if self.config.norm_input == "wes-mean-fixed":
-            mean_norm = jnp.linalg.norm(activations, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean()
+            mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(activations, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean())
             if state is not None:
                 # t = state.get(self.num_steps)
                 # state = state.set(self.ds_mean_norm,
                 #                   state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
-                state = state.set(self.ds_mean_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema))
+                state = state.set(self.ds_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema)))
 
         activations, pre_relu, hidden, norm_factor = self.encode(activations)
         targets = targets * norm_factor
