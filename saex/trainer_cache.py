@@ -60,11 +60,12 @@ class BufferTrainerConfig:
     cache_acc: int = 1
 
     buffer_max_samples: int = 0
-    buffer_dtype: jnp.dtype = jnp.float32
+    buffer_dtype: str = "float32"
     save_buffer: Optional[str] = None
     
     use_devices: int = 1
     mp_devices: int = 1
+    is_distributed: bool = False
     
     push_to_hub: Optional[Tuple[str, str]] = None
 
@@ -84,7 +85,7 @@ class BufferCacher(ModelHaver):
             print("Creating buffer...")
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
                 config.buffer_max_samples, config.n_dimensions,
-                dtype=config.buffer_dtype, mesh=self.mesh)
+                dtype=getattr(jnp, config.buffer_dtype), mesh=self.mesh)
             if config.restore_buffer:
                 print(f"Loading buffer ({config.restore_buffer})...")
                 self.buffer_state = self.buffer.restore(

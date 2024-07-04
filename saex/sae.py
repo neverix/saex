@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
 import jax
+import jmp
 import jax.numpy as jnp
 import jax.sharding as jshard
 import numpy as np
@@ -39,7 +40,7 @@ class SAEConfig:
     norm_input: Literal[None, "wes", "wes-mean", "wes-clip", "wes-mean-fixed"] = None
     wes_clip: tuple[float, float] = (1e-2, 100)
     wes_ema: float = 0.99
-    min_norm: float = 16.25
+    min_norm: float = 1.0
     anthropic_norm: bool = False
     
     project_updates_from_dec: bool = True
@@ -62,6 +63,7 @@ class SAEConfig:
     
     sparsity_tracking_epsilon: float = 0.05
     use_model_parallel: bool = True
+    loss_scaling: float = 100.0
     param_dtype: str = "float32"
 
 class SAEOutput(NamedTuple):
@@ -112,19 +114,23 @@ class SAE(eqx.Module):
                                                                (config.n_dimensions, self.d_hidden),
                                                                dtype=self.param_dtype)
         elif config.encoder_init_method == "orthogonal":
+            # self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey,
+            #                                               (config.n_dimensions, self.d_hidden),
+            #                                               dtype=self.param_dtype)
+            # # idk why, but it stopped working
             self.W_enc = jax.nn.initializers.orthogonal()(w_enc_subkey,
-                                                          (config.n_dimensions, self.d_hidden),
-                                                          dtype=self.param_dtype)
+                                                          (config.n_dimensions, self.d_hidden)
+                                                          ).astype(self.param_dtype)
         else:
             raise ValueError(f"Unknown encoder init method: \"{config.encoder_init_method}\"")
         self.W_enc = jax.device_put(self.W_enc, sharding["W_enc"])
         
         self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean,
-                              device=sharding["b_enc"], dtype=self.param_dtype)
-        self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=self.param_dtype)
-        self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=self.param_dtype)
-        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=self.param_dtype)
-        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.param_dtype)
+                              device=sharding["b_enc"], dtype=jnp.float32)
+        self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=jnp.float32)
+        self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=jnp.float32)
+        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=jnp.float32)
+        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=jnp.float32)
 
         if config.decoder_init_method == "kaiming":
             self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey,
@@ -176,9 +182,13 @@ class SAE(eqx.Module):
     @property
     def mean_norm_dtype(self):
         # return self.param_dtype
-        # return jnp.float32
+        return jnp.float32
         # return jnp.float16
-        return jnp.bfloat16
+        # return jnp.bfloat16
+
+    @property
+    def scaler(self):
+        return jmp.StaticLossScale(self.config.loss_scaling)
     
     @property
     def is_gated(self):
@@ -201,17 +211,18 @@ class SAE(eqx.Module):
         return x * norm_factor, norm_factor
 
     def encode(self, activations: jax.Array):
-        inputs, norm_factor = self.norm_input(activations)
+        inputs, norm_factor = self.norm_input(activations.astype(jnp.float32))
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
         pre_relu = inputs @ self.W_enc
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         post_relu = jax.nn.relu(pre_relu)
-        hidden = post_relu * self.s
         if self.config.is_gated:
             # hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
             hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
+        else:
+            hidden = post_relu * self.s
         return inputs, pre_relu, hidden, norm_factor
 
     def forward(self, activations: jax.Array):
@@ -222,12 +233,12 @@ class SAE(eqx.Module):
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
         if self.config.norm_input == "wes-mean-fixed":
-            mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(activations, axis=-1, keepdims=True).astype(self.mean_norm_dtype).mean())
+            mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(activations.astype(self.mean_norm_dtype), axis=-1, keepdims=True).mean())
             if state is not None:
                 # t = state.get(self.num_steps)
                 # state = state.set(self.ds_mean_norm,
                 #                   state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
-                state = state.set(self.ds_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema)))
+                state = state.set(self.ds_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema)).astype(self.mean_norm_dtype))
 
         activations, pre_relu, hidden, norm_factor = self.encode(activations)
         targets = targets * norm_factor
@@ -243,9 +254,9 @@ class SAE(eqx.Module):
             buffer = jnp.roll(buffer, -1, 0)
             buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
             state = state.set(self.activated_buffer, buffer)
-        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state)
+        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state).astype(jnp.float32)
         out = (hidden @ self.W_dec + self.b_dec)
-        reconstruction_loss = self.reconstruction_loss(out, targets)
+        reconstruction_loss = self.reconstruction_loss(out, targets).astype(jnp.float32)
         if state is not None:
             state = state.set(self.avg_loss_sparsity,
                                 sparsity_loss.mean(0) * self.config.sparsity_tracking_epsilon
@@ -257,13 +268,14 @@ class SAE(eqx.Module):
         if self.is_gated:
             sg_gated = (lambda x: x) if self.config.anthropic_norm else jax.lax.stop_gradient
             g_out = (jax.nn.relu(pre_relu) * self.s) @ sg_gated(self.W_dec) + sg_gated(self.b_dec)
-            gated_loss = self.reconstruction_loss(g_out, targets)
+            gated_loss = self.reconstruction_loss(g_out, targets).astype(jnp.float32)
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()
         if state is not None:  # we can only tell if a neuron is dead if we know if it was alive in the first place
-            death_loss = self.compute_death_loss(state, targets, out, pre_relu, norm_factor)
+            death_loss = self.compute_death_loss(state, targets, out, pre_relu, norm_factor).astype(jnp.float32)
             losses = {**losses, "death": death_loss}
             loss = loss + death_loss.mean() * self.config.death_penalty_coefficient
+        loss = self.scaler.scale(loss)
         output = SAEOutput(
             output=out / norm_factor,
             loss=loss,
@@ -342,9 +354,9 @@ class SAE(eqx.Module):
             ghost_recon = ghost_recon * jax.lax.stop_gradient(diff_norm / (ghost_norm * 2 + eps))[:, None]
             
             # same thing
-            ghost_loss = self.reconstruction_loss(ghost_recon, jax.lax.stop_gradient(residual))
+            ghost_loss = self.reconstruction_loss(ghost_recon, jax.lax.stop_gradient(residual)).astype(jnp.float32)
             # ghost_loss = jnp.square(ghost_recon - jax.lax.stop_gradient(residual))
-            recon_loss = self.reconstruction_loss(reconstructions, targets)
+            recon_loss = self.reconstruction_loss(reconstructions, targets).astype(jnp.float32)
             ghost_loss = ghost_loss * jax.lax.stop_gradient(recon_loss / (ghost_loss + eps))
             
             loss = jax.lax.select(dead.any(), ghost_loss, jnp.zeros_like(ghost_loss)).mean(-1)
@@ -397,6 +409,7 @@ class SAE(eqx.Module):
         return updates
 
     def update_gradients(self, grads: PyTree[Float], state: eqx.nn.State, key: jax.random.PRNGKey):
+        grads = self.scaler.unscale(grads)
         if self.config.project_grads_from_dec and not self.config.anthropic_norm:
             grads = self.project(grads)
         return grads
@@ -517,6 +530,7 @@ class SAE(eqx.Module):
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
             mean_norm=state.get(self.ds_mean_norm),
+            **{f"{param_name}_norm": jnp.linalg.norm(getattr(self, param_name)) for param_name in ("W_enc", "W_dec", "b_enc", "b_dec")},
         )
     
     def get_death_penalty_threshold(self, state):
@@ -582,7 +596,7 @@ class SAE(eqx.Module):
                         load_param = param
                 try:
                     self = eqx.tree_at(lambda s: getattr(s, param), self,
-                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype),
+                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else jnp.float32),
                                                     self.sharding[param]))
                 except safetensors.SafetensorError:
                     print("Can't load parameter", param)
