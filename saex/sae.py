@@ -65,6 +65,7 @@ class SAEConfig:
     use_model_parallel: bool = True
     loss_scaling: float = 100.0
     param_dtype: str = "float32"
+    misc_dtype: str = "float32"
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -126,11 +127,11 @@ class SAE(eqx.Module):
         self.W_enc = jax.device_put(self.W_enc, sharding["W_enc"])
         
         self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean,
-                              device=sharding["b_enc"], dtype=jnp.float32)
-        self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=jnp.float32)
-        self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=jnp.float32)
-        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=jnp.float32)
-        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=jnp.float32)
+                              device=sharding["b_enc"], dtype=self.misc_dtype)
+        self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=self.misc_dtype)
+        self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=self.misc_dtype)
+        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=self.misc_dtype)
+        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.misc_dtype)
 
         if config.decoder_init_method == "kaiming":
             self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey,
@@ -171,7 +172,9 @@ class SAE(eqx.Module):
         self.avg_l0 = eqx.nn.StateIndex(jnp.zeros((self.d_hidden,),
                                                   device=state_sharding["avg_l0"]))
         self.activated_buffer = eqx.nn.StateIndex(jnp.zeros((self.config.buffer_size, self.d_hidden),
-                                                            device=state_sharding["activated_buffer"]))
+                                                            device=state_sharding["activated_buffer"],
+                                                            dtype=jnp.float32
+                                                            ))
         self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype))
         self.mean_norm = jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype)
     
@@ -185,6 +188,10 @@ class SAE(eqx.Module):
         return jnp.float32
         # return jnp.float16
         # return jnp.bfloat16
+
+    @property
+    def misc_dtype(self):
+        return getattr(jnp, self.config.misc_dtype)
 
     @property
     def scaler(self):
@@ -596,7 +603,7 @@ class SAE(eqx.Module):
                         load_param = param
                 try:
                     self = eqx.tree_at(lambda s: getattr(s, param), self,
-                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else jnp.float32),
+                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else self.misc_dtype),
                                                     self.sharding[param]))
                 except safetensors.SafetensorError:
                     print("Can't load parameter", param)
