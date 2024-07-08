@@ -71,8 +71,8 @@ def train(
                 anthropic_norm=True,
                 # norm_input="wes-clip",
                 # norm_input="wes",
-                norm_input="wes-mean",
-                # norm_input="wes-mean-fixed",
+                # norm_input="wes-mean",
+                norm_input="wes-mean-fixed",
                 # wes_clip=(0.25, 0.25),
                 death_penalty_threshold=death_penalty_threshold,
                 death_penalty_coefficient=0.25,
@@ -100,8 +100,8 @@ def train(
             save_buffer=False,
             model_config=MicrlhfModelConfig(
                 tokenizer_path="alpindale/gemma-2b",
-                gguf_path="weights/gemma-2b.gguf",
-                # gguf_path="../micrlhf-progress/models/gemma-2b-it.gguf",
+                # gguf_path="weights/gemma-2b.gguf",
+                gguf_path="../micrlhf-progress/models/gemma-2b-it.gguf",
                 device_map=f"auto:mp={mp_devices}" if n_devices > 1 else "tpu:0",
                 use_flash=max_seq_len >= 128 and max_seq_len % 128 == 0,
                 layer=layer,
@@ -138,8 +138,8 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
           train_steps=150_000,
-          push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-{sae_type}-test-run-6"),
-        #   push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-0"),
+        #   push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-{sae_type}-test-run-6"),
+          push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-0"),
           restore=restore,
           sae_type=sae_type,
           )
