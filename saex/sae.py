@@ -65,6 +65,7 @@ class SAEConfig:
     use_model_parallel: bool = True
     loss_scaling: float = 100.0
     param_dtype: str = "float32"
+    bias_dtype: str = "float32"
     misc_dtype: str = "float32"
 
 class SAEOutput(NamedTuple):
@@ -127,11 +128,11 @@ class SAE(eqx.Module):
         self.W_enc = jax.device_put(self.W_enc, sharding["W_enc"])
         
         self.b_enc = jnp.full((self.d_hidden,), config.encoder_bias_init_mean,
-                              device=sharding["b_enc"], dtype=self.misc_dtype)
+                              device=sharding["b_enc"], dtype=self.bias_dtype)
         self.s = jnp.ones((self.d_hidden,), device=sharding["s"], dtype=self.misc_dtype)
         self.s_gate = jnp.zeros((self.d_hidden,), device=sharding["s"], dtype=self.misc_dtype)
-        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=self.misc_dtype)
-        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.misc_dtype)
+        self.b_gate = jnp.zeros((self.d_hidden,), device=sharding["b_enc"], dtype=self.bias_dtype)
+        self.b_dec = jnp.zeros((config.n_dimensions,), device=sharding["b_dec"], dtype=self.bias_dtype)
 
         if config.decoder_init_method == "kaiming":
             self.W_dec = jax.nn.initializers.kaiming_uniform()(w_dec_subkey,
@@ -192,6 +193,10 @@ class SAE(eqx.Module):
     @property
     def misc_dtype(self):
         return getattr(jnp, self.config.misc_dtype)
+    
+    @property
+    def bias_dtype(self):
+        return getattr(jnp, self.config.bias_dtype)
 
     @property
     def scaler(self):
@@ -603,7 +608,9 @@ class SAE(eqx.Module):
                         load_param = param
                 try:
                     self = eqx.tree_at(lambda s: getattr(s, param), self,
-                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else self.misc_dtype),
+                                    jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else
+                                                                                   self.bias_dtype if param.startswith("b") else
+                                                                                   self.misc_dtype),
                                                     self.sharding[param]))
                 except safetensors.SafetensorError:
                     print("Can't load parameter", param)
