@@ -454,7 +454,10 @@ class SAE(eqx.Module):
             elif self.config.decoder_bias_init_method == "geom_median":
                 b_dec = b_dec + geometric_median(last_target - last_output.output)
             try:
-                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))            
+                try:
+                    opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))
+                except AttributeError:
+                    pass
                 opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).nu.b_dec))
             except AttributeError:
                 pass
@@ -497,9 +500,12 @@ class SAE(eqx.Module):
                 # reset momentum and variance
                 adam = get_adam(opt_state)
 
-                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))
-                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_enc, opt_state, jnp.where(dead, 0, adam.mu.b_enc))
-                # opt_state = eqx.tree_at(lambda s: s[adam_idx].mu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].mu.W_dec))
+                try:
+                    opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))
+                    opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_enc, opt_state, jnp.where(dead, 0, adam.mu.b_enc))
+                    # opt_state = eqx.tree_at(lambda s: s[adam_idx].mu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].mu.W_dec))
+                except AttributeError:
+                    pass
 
                 opt_state = eqx.tree_at(lambda s: get_adam(s).nu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.nu.W_enc))
                 opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_enc, opt_state, jnp.where(dead, 0, adam.nu.b_enc))

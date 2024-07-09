@@ -22,6 +22,7 @@ from .haver import ModelHaver, SAEHaver
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .models.transformers_model import TransformersModelConfig
 from .sae import SAE, SAEConfig
+from .optim import momentumless_adam
 
 
 @dataclass
@@ -214,7 +215,7 @@ class BufferTrainer(SAEHaver):
         optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
 
-            optax.adam(self.config.lr, b1=self.config.beta1, b2=self.config.beta2) if self.config.optimizer == "adam" else
+            (optax.adam(self.config.lr, b1=self.config.beta1, b2=self.config.beta2) if self.config.beta1 > 0 else momentumless_adam(self.config.lr, b2=self.config.beta2)) if self.config.optimizer == "adam" else
             optax.adafactor(self.config.lr) if self.config.optimizer == "adafactor" else
             scale_by_adam_8bit(b1=self.config.beta1, b2=self.config.beta2) if self.config.optimizer == "adam8" else 1/0,
 
@@ -248,7 +249,10 @@ class BufferTrainer(SAEHaver):
                 # SAE state is pretty small and there's no quadratic scaling, so we don't need to shard it as hard
                 # (I don't think equinox state can be sharded... StateIndex is not ordered, so tree_flatten won't work)
                 # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
-                opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+                try:
+                    opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+                except AttributeError:
+                    pass
                 opt_state = eqx.tree_at(lambda o: o[1][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             
             batch = jax.lax.with_sharding_constraint(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
@@ -267,7 +271,10 @@ class BufferTrainer(SAEHaver):
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             # sae_state = eqx.filter_shard(sae_state, self.sharding_sae_state)
             if self.config.optimizer == "adam":
-                opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+                try:
+                    opt_state = eqx.tree_at(lambda o: o[1][0].mu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
+                except AttributeError:
+                    pass
                 opt_state = eqx.tree_at(lambda o: o[1][0].nu, opt_state, replace_fn=lambda x: eqx.filter_shard(x, self.sharding_sae))
             if self.config.ema:
                 def ema_update(ema_params, sae_params):

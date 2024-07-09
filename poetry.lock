@@ -1052,9 +1052,9 @@ files = [
 jax = ">=0.4.27"
 msgpack = "*"
 numpy = [
-    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
     {version = ">=1.23.2", markers = "python_version >= \"3.11\" and python_version < \"3.12\""},
     {version = ">=1.22", markers = "python_version < \"3.11\""},
+    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
 ]
 optax = "*"
 orbax-checkpoint = "*"
@@ -1831,15 +1831,15 @@ jaxlib = [
 libtpu-nightly = {version = "0.1.dev20240617", optional = true, markers = "extra == \"tpu\""}
 ml-dtypes = ">=0.2.0"
 numpy = [
-    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
     {version = ">=1.23.2", markers = "python_version >= \"3.11\" and python_version < \"3.12\""},
     {version = ">=1.22", markers = "python_version < \"3.11\""},
+    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
 ]
 opt-einsum = "*"
 requests = {version = "*", optional = true, markers = "extra == \"tpu\""}
 scipy = [
-    {version = ">=1.11.1", markers = "python_version >= \"3.12\""},
     {version = ">=1.9", markers = "python_version < \"3.12\""},
+    {version = ">=1.11.1", markers = "python_version >= \"3.12\""},
 ]
 
 [package.extras]
@@ -1903,8 +1903,8 @@ files = [
 ml-dtypes = ">=0.2.0"
 numpy = ">=1.22"
 scipy = [
-    {version = ">=1.11.1", markers = "python_version >= \"3.12\""},
     {version = ">=1.9", markers = "python_version < \"3.12\""},
+    {version = ">=1.11.1", markers = "python_version >= \"3.12\""},
 ]
 
 [[package]]
@@ -2613,9 +2613,9 @@ files = [
 
 [package.dependencies]
 numpy = [
-    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
     {version = ">=1.23.3", markers = "python_version >= \"3.11\" and python_version < \"3.12\""},
     {version = ">=1.21.2", markers = "python_version >= \"3.10\" and python_version < \"3.11\""},
+    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
 ]
 
 [package.extras]
@@ -3288,9 +3288,9 @@ files = [
 
 [package.dependencies]
 numpy = [
-    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
     {version = ">=1.23.2", markers = "python_version == \"3.11\""},
     {version = ">=1.22.4", markers = "python_version < \"3.11\""},
+    {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
 ]
 python-dateutil = ">=2.8.2"
 pytz = ">=2020.1"
@@ -3702,8 +3702,8 @@ files = [
 annotated-types = ">=0.4.0"
 pydantic-core = "2.20.1"
 typing-extensions = [
-    {version = ">=4.12.2", markers = "python_version >= \"3.13\""},
     {version = ">=4.6.1", markers = "python_version < \"3.13\""},
+    {version = ">=4.12.2", markers = "python_version >= \"3.13\""},
 ]
 
 [package.extras]
@@ -5059,8 +5059,8 @@ keras = ">=3.2.0"
 libclang = ">=13.0.0"
 ml-dtypes = ">=0.3.1,<0.5.0"
 numpy = [
-    {version = ">=1.26.0,<2.0.0", markers = "python_version >= \"3.12\""},
     {version = ">=1.23.5,<2.0.0", markers = "python_version <= \"3.11\""},
+    {version = ">=1.26.0,<2.0.0", markers = "python_version >= \"3.12\""},
 ]
 opt-einsum = ">=2.3.2"
 packaging = "*"
