@@ -94,6 +94,8 @@ def train(
                 weights_8bit=False,
                 # weights_8bit=True,
                 use_aqt=False,
+                # topk_k=None,
+                topk_k=256,
             ),
             # optimizer="adafactor",
             optimizer="adam",

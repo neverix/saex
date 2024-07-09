@@ -30,7 +30,8 @@ class SAEConfig:
     buffer_size: int = 100
 
     expansion_factor: float = 32
-    
+    topk_k: Optional[int] = None
+ 
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
     remove_decoder_bias: bool = False
@@ -252,16 +253,21 @@ class SAE(eqx.Module):
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         post_relu = jax.nn.relu(pre_relu)
+        if self.config.topk_k is not None:
+            og_shape = post_relu.shape
+            post_relu = post_relu.reshape(-1, post_relu.shape[-1])
+            values, indices = jax.lax.top_k(post_relu, self.config.topk_k)
+            post_relu = jax.vmap(lambda a, v, i: jnp.zeros_like(a).at[i].set(v))(post_relu, values, indices)
+            post_relu = post_relu.reshape(og_shape)
         if self.config.is_gated:
             # hidden = (post_relu > 0) * ((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
             hidden = (post_relu > 0) * jax.nn.relu((inputs @ self.W_enc) * jax.nn.softplus(self.s_gate) * self.s + self.b_gate)
         else:
             hidden = post_relu * self.s
-        return inputs, pre_relu, hidden, norm_factor
+        return inputs, pre_relu, post_relu, hidden, norm_factor
 
     def forward(self, activations: jax.Array):
-        _, _, post_relu, norm_factor = self.encode(activations)
-        hidden = post_relu
+        _, _, _, hidden, norm_factor = self.encode(activations)
         out = hidden @ self.W_dec + self.b_dec
         return out / norm_factor
 
@@ -276,7 +282,7 @@ class SAE(eqx.Module):
 
         dot_enc, dot_dec = self.dot_general(key)
 
-        activations, pre_relu, hidden, norm_factor = self.encode(activations, dot_enc=dot_enc)
+        activations, pre_relu, post_relu, hidden, norm_factor = self.encode(activations, dot_enc=dot_enc)
         targets = targets * norm_factor
         active = hidden != 0
         if state is not None:
@@ -290,7 +296,7 @@ class SAE(eqx.Module):
             buffer = jnp.roll(buffer, -1, 0)
             buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
             state = state.set(self.activated_buffer, buffer)
-        sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state).astype(jnp.float32)
+        sparsity_loss = self.sparsity_loss(post_relu, state=state).astype(jnp.float32)
         if dot_dec is not None:
             decoded = aqt.einsum("ab,bc->ac", hidden.astype(self.W_dec), self.W_dec, dot_dec)
         else:
