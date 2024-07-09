@@ -233,9 +233,9 @@ class BufferTrainer(SAEHaver):
         
         @partial(jax.jit, static_argnums=1)
         @partial(jax.value_and_grad, has_aux=True)
-        def loss_fn(sae_params, sae_static, sae_state, batch, targets):
+        def loss_fn(sae_params, sae_static, sae_state, batch, targets, key):
             sae = eqx.combine(sae_params, sae_static)
-            sae_output, sae_state = sae(batch, targets, sae_state)
+            sae_output, sae_state = sae(batch, targets, key=key, state=sae_state)
             return sae_output.loss, (sae_output, sae_state)
 
         @partial(jax.jit, donate_argnums=(2, 3, 4, 5), static_argnums=(6, 7))
@@ -257,7 +257,8 @@ class BufferTrainer(SAEHaver):
             
             batch = jax.lax.with_sharding_constraint(batch, jshard.NamedSharding(self.mesh, P("dp", None)))
             targets = jax.lax.with_sharding_constraint(targets, jshard.NamedSharding(self.mesh, P("dp", None)))
-            (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch, targets)
+            key_sae, key = jax.random.split(key)
+            (_, (sae_output, sae_state)), grad = loss_fn(sae_params, sae_static, sae_state, batch, targets, key_sae)
             sae_params = eqx.filter_shard(sae_params, self.sharding_sae)
             sae = eqx.combine(sae_params, sae_static)
             stats = sae.get_stats(sae_state, batch, targets, sae_output)

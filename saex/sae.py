@@ -15,6 +15,8 @@ from jax.experimental.checkify import checkify
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
+import aqt.jax.v2.config as aqt_config
+import aqt.jax.v2.aqt_dot_general as aqt
 
 from . import utils
 from .utils.geometric_median import geometric_median
@@ -67,6 +69,7 @@ class SAEConfig:
     bias_dtype: str = "float32"
     misc_dtype: str = "float32"
     weights_8bit: bool = False
+    use_aqt: bool = False
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -97,6 +100,9 @@ class SAE(eqx.Module):
     avg_l0: eqx.nn.StateIndex
     activated_buffer: eqx.nn.StateIndex
     ds_mean_norm: eqx.nn.StateIndex
+
+    enc_config: Optional[aqt_config.DotGeneral]
+    dec_config: Optional[aqt_config.DotGeneral]
 
     def __init__(self, config, mesh: jshard.Mesh, key=None):        
         if key is None:
@@ -178,6 +184,13 @@ class SAE(eqx.Module):
                                                             ))
         self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype))
         self.mean_norm = jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype)
+        
+        if self.config.use_aqt:
+            self.enc_config = aqt_config.fully_quantized(fwd_bits=8, bwd_bits=8)
+            self.dec_config = aqt_config.fully_quantized(fwd_bits=8, bwd_bits=8)
+        else:
+            self.enc_config = None
+            self.dec_config = None
     
     @property
     def param_dtype(self):
@@ -205,7 +218,13 @@ class SAE(eqx.Module):
     @property
     def is_gated(self):
         return self.config.is_gated
-    
+
+    def dot_general(self, key):
+        if key is None or not self.config.use_aqt:
+            return None, None
+        key1, key2 = jax.random.split(key)
+        return aqt_config.set_context(self.enc_config, key1, None), aqt_config.set_context(self.dec_config, key2, None)
+
     def norm_input(self, x: jax.typing.ArrayLike):
         if self.config.norm_input == "wes":
             # Wes-style normalization
@@ -222,11 +241,14 @@ class SAE(eqx.Module):
             norm_factor = jnp.ones_like(x)
         return x * norm_factor, norm_factor
 
-    def encode(self, activations: jax.Array):
+    def encode(self, activations: jax.Array, dot_enc=None):
         inputs, norm_factor = self.norm_input(activations.astype(jnp.float32))
         if self.config.remove_decoder_bias:
             inputs = inputs - self.b_dec
-        pre_relu = inputs @ self.W_enc
+        if dot_enc is not None:
+            pre_relu = aqt.einsum("ab,bc->ac", inputs.astype(self.W_enc), self.W_enc, dot_enc)
+        else:
+            pre_relu = inputs @ self.W_enc
         if self.config.use_encoder_bias:
             pre_relu = pre_relu + self.b_enc
         post_relu = jax.nn.relu(pre_relu)
@@ -243,7 +265,7 @@ class SAE(eqx.Module):
         out = hidden @ self.W_dec + self.b_dec
         return out / norm_factor
 
-    def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, state=None):
+    def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, key: jax.random.PRNGKey = None, state=None):
         if self.config.norm_input == "wes-mean-fixed":
             mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(activations.astype(self.mean_norm_dtype), axis=-1, keepdims=True).mean())
             if state is not None:
@@ -252,7 +274,9 @@ class SAE(eqx.Module):
                 #                   state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
                 state = state.set(self.ds_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema)).astype(self.mean_norm_dtype))
 
-        activations, pre_relu, hidden, norm_factor = self.encode(activations)
+        dot_enc, dot_dec = self.dot_general(key)
+
+        activations, pre_relu, hidden, norm_factor = self.encode(activations, dot_enc=dot_enc)
         targets = targets * norm_factor
         active = hidden != 0
         if state is not None:
@@ -267,7 +291,11 @@ class SAE(eqx.Module):
             buffer = buffer.at[-1].set(active.astype(buffer.dtype).mean(0))
             state = state.set(self.activated_buffer, buffer)
         sparsity_loss = self.sparsity_loss(jax.nn.relu(pre_relu), state=state).astype(jnp.float32)
-        out = (hidden @ self.W_dec + self.b_dec)
+        if dot_dec is not None:
+            decoded = aqt.einsum("ab,bc->ac", hidden.astype(self.W_dec), self.W_dec, dot_dec)
+        else:
+            decoded = hidden @ self.W_dec
+        out = decoded + self.b_dec
         reconstruction_loss = self.reconstruction_loss(out, targets).astype(jnp.float32)
         if state is not None:
             state = state.set(self.avg_loss_sparsity,

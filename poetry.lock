@@ -213,6 +213,26 @@ files = [
 ]
 
 [[package]]
+name = "aqtp"
+version = "0.7.5"
+description = "Accurate Quantized Training library."
+optional = false
+python-versions = "*"
+files = [
+    {file = "aqtp-0.7.5-py2.py3-none-any.whl", hash = "sha256:b50e60449fd4352e3baa87f7bee3ea2ee76b73850dbf24fe3fc079985a6ffb76"},
+    {file = "aqtp-0.7.5.tar.gz", hash = "sha256:3d45b762b0b9084c6ba8bada9be5f6de08105e307b370b419a540042a4f39c6b"},
+]
+
+[package.dependencies]
+absl-py = "*"
+flax = "*"
+jax = "*"
+jaxlib = "*"
+
+[package.extras]
+test = ["pytest"]
+
+[[package]]
 name = "astor"
 version = "0.8.1"
 description = "Read/rewrite/write Python ASTs"
@@ -6372,4 +6392,4 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "2eb3230a9d48c94953dbbb4c8b1b1766b5922c3ff5eea683ba5cec2589af2075"
+content-hash = "d64cdbd0c93180078e8ce87da061e41c7795f332c2b57a2bd25f011ee6f9d33a"
