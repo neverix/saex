@@ -4,16 +4,15 @@ from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
 
+import equinox as eqx
 import jax
-import jmp
 import jax.numpy as jnp
 import jax.sharding as jshard
+import jmp
 import numpy as np
+import safetensors
 from jax.experimental.checkify import checkify
 from jax.sharding import PartitionSpec as P
-
-import equinox as eqx
-import safetensors
 from jaxtyping import Array, Float, PyTree
 from safetensors.flax import save_file
 
@@ -67,6 +66,7 @@ class SAEConfig:
     param_dtype: str = "float32"
     bias_dtype: str = "float32"
     misc_dtype: str = "float32"
+    weights_8bit: bool = False
 
 class SAEOutput(NamedTuple):
     losses: Dict[str, jax.Array]
@@ -453,8 +453,11 @@ class SAE(eqx.Module):
                 b_dec = b_dec + jnp.mean(last_target - last_output.output, axis=0)
             elif self.config.decoder_bias_init_method == "geom_median":
                 b_dec = b_dec + geometric_median(last_target - last_output.output)
-            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))            
-            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).nu.b_dec))           
+            try:
+                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).mu.b_dec))            
+                opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_dec, opt_state, jnp.zeros_like(get_adam(opt_state).nu.b_dec))
+            except AttributeError:
+                pass
             return b_dec, opt_state
         updated_b_dec, opt_state = jax.lax.switch(jnp.astype(step == 1, jnp.int32), (lambda *a: a, adjust_mean), updated.b_dec, opt_state)
         updated = eqx.tree_at(lambda s: s.b_dec, updated, updated_b_dec)
@@ -490,16 +493,19 @@ class SAE(eqx.Module):
             updated = eqx.tree_at(lambda s: s.W_dec, updated, W_dec)
             updated = eqx.tree_at(lambda s: s.s, updated, jnp.where(dead, 1, updated.s))
             
-            # reset momentum and variance
-            adam = get_adam(opt_state)
-    
-            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))
-            opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_enc, opt_state, jnp.where(dead, 0, adam.mu.b_enc))
-            # opt_state = eqx.tree_at(lambda s: s[adam_idx].mu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].mu.W_dec))
+            try:
+                # reset momentum and variance
+                adam = get_adam(opt_state)
 
-            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.nu.W_enc))
-            opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_enc, opt_state, jnp.where(dead, 0, adam.nu.b_enc))
-            # opt_state = eqx.tree_at(lambda s: s[adam_idx].nu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].nu.W_dec))
+                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.mu.W_enc))
+                opt_state = eqx.tree_at(lambda s: get_adam(s).mu.b_enc, opt_state, jnp.where(dead, 0, adam.mu.b_enc))
+                # opt_state = eqx.tree_at(lambda s: s[adam_idx].mu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].mu.W_dec))
+
+                opt_state = eqx.tree_at(lambda s: get_adam(s).nu.W_enc, opt_state, jnp.where(dead[None, :], 0, adam.nu.W_enc))
+                opt_state = eqx.tree_at(lambda s: get_adam(s).nu.b_enc, opt_state, jnp.where(dead, 0, adam.nu.b_enc))
+                # opt_state = eqx.tree_at(lambda s: s[adam_idx].nu.W_dec, opt_state, jnp.where(dead[:, None], 0, opt_state[adam_idx].nu.W_dec))
+            except AttributeError:
+                pass
 
             state = state.set(self.time_since_fired, jnp.where(dead, 0, state.get(self.time_since_fired)))
             return updated, state, opt_state
@@ -509,6 +515,20 @@ class SAE(eqx.Module):
             (lambda *a: a, resample),
             updated_params, state, opt_state)
         updated = eqx.combine(updated_params, updated_static)
+        
+        def requantize(x):
+            # simulating 9-bit quantization
+            og_shape = x.shape
+            x = x.reshape(-1, 32)
+            scale = jnp.abs(x).max(-1, keepdims=True) / 127
+            quants = x / scale
+            quants = quants.clip(-127, 127).round()
+            
+            return (quants * scale).reshape(og_shape)
+
+        if self.config.weights_8bit:
+            for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
+                updated = eqx.tree_at(selector, updated, replace_fn=requantize)
 
         return updated, state, opt_state
     

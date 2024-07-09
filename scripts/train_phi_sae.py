@@ -1,9 +1,9 @@
 import re
+from typing import Optional
 
 import fire
-import numpy as np
 import jax.numpy as jnp
-from typing import Optional
+import numpy as np
 
 from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.train_script import train_main

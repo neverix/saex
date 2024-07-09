@@ -1,8 +1,9 @@
-import jax
-import fire
-import numpy as np
-import jax.numpy as jnp
 from typing import Optional
+
+import fire
+import jax
+import jax.numpy as jnp
+import numpy as np
 
 from saex.models.micrlhf_model import MicrlhfModelConfig
 from saex.train_script import train_main
@@ -90,7 +91,11 @@ def train(
                 restrict_dec_norm=None,
                 project_grads_from_dec=False,
                 project_updates_from_dec=False,
+                weights_8bit=False,
+                # weights_8bit=True,
             ),
+            optimizer="adam",
+            # optimizer="adam8",
             sae_restore=restore,
             cache_every_steps=int(cache_size / batch_size * cache_ratio),
             cache_batch_size=cache_batch_size,
@@ -103,7 +108,7 @@ def train(
                 # gguf_path="weights/gemma-2b.gguf",
                 gguf_path="../micrlhf-progress/models/gemma-2b-it.gguf",
                 device_map=f"auto:mp={mp_devices}" if n_devices > 1 else "tpu:0",
-                use_flash=max_seq_len >= 128 and max_seq_len % 128 == 0,
+                use_flash=False,
                 layer=layer,
                 max_seq_len=max_seq_len,
                 from_type="gemma",
@@ -139,7 +144,7 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
           train_steps=150_000,
         #   push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-{sae_type}-test-run-6"),
-          push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-0"),
+          push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-1"),
           restore=restore,
           sae_type=sae_type,
           )

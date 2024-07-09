@@ -1,10 +1,9 @@
 from typing import Optional
 
+import equinox as eqx
 import jax
 import jax.sharding as jshard
 import numpy as np
-
-import equinox as eqx
 
 from . import utils
 from .buffer import ActivationBuffer

@@ -1,10 +1,11 @@
+import gc
 from itertools import chain
 from typing import List, Union
-import wandb
-import jax
-import gc
 
+import jax
 import jax_smi
+
+import wandb
 
 from .trainer_cache import BufferCacher, BufferTrainer, BufferTrainerConfig
 

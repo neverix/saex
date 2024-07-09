@@ -1,10 +1,10 @@
-import gradio as gr
-import pyarrow.parquet as pq
-import pyarrow.compute as pc
-from transformers import AutoTokenizer
-from matplotlib import pyplot as plt
 import os
 
+import gradio as gr
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+from matplotlib import pyplot as plt
+from transformers import AutoTokenizer
 
 token_table = pq.read_table("weights/tokens.parquet")
 cache_path = "weights/caches"

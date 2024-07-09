@@ -9,35 +9,26 @@ try:
 except NameError:
     pass
 
-from saex.iterable_dataset import IterableDatasetConfig
-from saex.models.micrlhf_model import MicrlhfModelConfig
-from saex.haver import ModelHaver, SAEHaver
-from saex.sae import SAEConfig
-from more_itertools import chunked
 import dataclasses
-
-from micrlhf.utils.load_sae import get_sae
 import os
-
-from collections import defaultdict, Counter
+import random
+from collections import Counter, defaultdict
 from functools import partial
-from tqdm.auto import trange
+
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
-import equinox as eqx
-import random
-import jax
-
+import pyarrow as pa
 import pyarrow.parquet as pq
-import pyarrow as pa
+from micrlhf.utils.load_sae import get_sae
+from more_itertools import chunked
+from tqdm.auto import tqdm, trange
 
-import pyarrow as pa
-from tqdm.auto import trange
-import pyarrow.parquet as pq
-
-from tqdm.auto import tqdm
-import pyarrow as pa
-import numpy as np
+from saex.haver import ModelHaver, SAEHaver
+from saex.iterable_dataset import IterableDatasetConfig
+from saex.models.micrlhf_model import MicrlhfModelConfig
+from saex.sae import SAEConfig
 
 stride = 0.25
 n_strides = 128

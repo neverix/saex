@@ -2,14 +2,13 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import List, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.sharding as jshard
 import jax.tree_util
-
-import equinox as eqx
-from micrlhf.llama import LlamaBlock, LlamaTransformer
 from micrlhf.flash import flashify
+from micrlhf.llama import LlamaBlock, LlamaTransformer
 from micrlhf.scan import sequential_to_scan
 from penzai import pz
 from penzai.toolshed import jit_wrapper
