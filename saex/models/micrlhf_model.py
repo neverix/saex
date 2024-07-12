@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.sharding as jshard
 import jax.tree_util
 from micrlhf.flash import flashify
-from micrlhf.llama import LlamaBlock, LlamaTransformer
+from micrlhf.llama import LlamaBlock, LlamaTransformer, LlamaMLP
 from micrlhf.scan import sequential_to_scan
 from penzai import pz
 from penzai.toolshed import jit_wrapper
@@ -20,12 +20,16 @@ class MicrlhfModelConfig:
     tokenizer_path: os.PathLike
     gguf_path: os.PathLike
     layer: int
-    sae_type: Literal["residual", "attn_out"] = "residual"
+    sae_type: Literal["residual", "attn_out", "transcoder"] = "residual"
     max_seq_len: int = 512
     device_map: str = "auto:mp=2"
     use_flash: bool = False
     from_type: Literal[None, "gemma"] = None
     load_eager: bool = True
+
+    @property
+    def has_outputs(self):
+        return self.sae_type == "transcoder"
 
     @property
     def model_class(self) -> type:
@@ -144,20 +148,48 @@ class MicrlhfModel(object):
                 (lambda sae_s, sae_d, inputs, la, hiddens:
                     la((inputs, pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding"),))),
                 static_argnums=0)
+        elif self.config.sae_type == "transcoder":
+            mlp_cls = LlamaMLP
+            get_residuals = self._llama.select() \
+                .at_instances_of(mlp_cls) \
+                .pick_nth_selected(layer) \
+                .apply(lambda x: pz.nn.Sequential([pz.de.TellIntermediate.from_config(tag=f"mlp-in-{layer}"), x, pz.de.TellIntermediate.from_config(tag=f"mlp-out-{layer}")]))
+            self._getter = pz.de.CollectingSideOutputs.handling(get_residuals)
+            self._value_call = jax.jit(lambda la, inputs: tuple(m.value for m in la(inputs)[1]))
+            self._value = self._getter
+            
+            replaced = \
+                self._llama.select() \
+                .at_instances_of(mlp_cls) \
+                .pick_nth_selected(layer) \
+                .apply(
+                    lambda _: SideInput.from_config(f"mlp-rep-{layer}")
+                )
+            self._setter = pz.de.WithSideInputsFromInputTuple.handling(replaced, [f"mlp-rep-{layer}"])
+            self._setter_call = jax.jit(
+                (lambda sae_s, sae_d, inputs, la, hiddens:
+                    la((inputs, pz.nx.wrap(eqx.combine(sae_s, sae_d).forward(hiddens), "batch", "seq", "embedding"),))),
+                static_argnums=0)
         else:
-            raise ValueError(f"Invalid sae_type: {self.config.sae_type}")
+            raise ValueError(f"Invalid SAE type: {self.config.sae_type}")
 
     def __call__(self, texts: List[str]):
         inputs, mask = self.encode_texts(texts)
         hidden_states = self._value_call(self._value, inputs)
-        hidden_states = hidden_states.untag("batch", "seq", "embedding").data_array
+        if isinstance(hidden_states, tuple):
+            hidden_states = jnp.concatenate(tuple(hs.untag("batch", "seq", "embedding").data_array for hs in hidden_states), axis=-1)
+        else:
+            hidden_states = hidden_states.untag("batch", "seq", "embedding").data_array
 
         return hidden_states.reshape(-1, hidden_states.shape[-1]), {"mask": mask}
 
     def eval_loss(self, texts, autoencoder):
         inputs, mask = self.encode_texts(texts)
         logits, (hidden_states,) = self._getter_call(self._getter, inputs)
-        hidden_states = hidden_states.value.untag("batch", "seq", "embedding").data_array
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0].value.untag("batch", "seq", "embedding").data_array
+        else:
+            hidden_states = hidden_states.value.untag("batch", "seq", "embedding").data_array
         sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
         logits_reconstructed = self._setter_call(
             sae_static, sae_params, inputs, self._setter, hidden_states)

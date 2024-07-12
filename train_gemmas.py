@@ -1,6 +1,6 @@
 import os
 # layers = [3, 4, 7, 8, 9]
-layers = [12, 14, 16, 11, 13, 15, 10, 6, 8, 9, 7, 5, 4, 3, 2, 1][7:]
+layers = [12, 14, 16, 11, 13, 15, 10, 6, 8, 9, 7, 5, 4, 3, 2, 1, 0][-1:]
 for layer_idx in range(len(layers)):
     layer = layers[layer_idx]
     restore = None  # if layer_idx == 0 else f"weights/phi-l{layers[layer_idx-1]}-gated.safetensors"

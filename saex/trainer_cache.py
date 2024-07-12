@@ -89,7 +89,8 @@ class BufferCacher(ModelHaver):
             print("Creating buffer...")
             self.buffer, self.buffer_state = eqx.nn.make_with_state(ActivationBuffer)(
                 config.buffer_max_samples, config.n_dimensions,
-                dtype=getattr(jnp, config.buffer_dtype), mesh=self.mesh)
+                dtype=getattr(jnp, config.buffer_dtype), mesh=self.mesh,
+                store_twice=config.model_config.has_outputs)
             if config.restore_buffer:
                 print(f"Loading buffer ({config.restore_buffer})...")
                 self.buffer_state = self.buffer.restore(
@@ -294,12 +295,16 @@ class BufferTrainer(SAEHaver):
             
             batch = yield
             if batch is None:
-                print("stopped", wandb_suffix)
+                print("Stopped", wandb_suffix)
                 break
+            if self.config.model_config.has_outputs:
+                batch, targets = jnp.split(batch, 2, axis=-1)
+            else:
+                targets = batch
             
             key, subkey = jax.random.split(key)
             sae_params, ema_params, self.sae_state, opt_state, stats = train_step(
-                batch, batch, sae_params, ema_params, self.sae_state, opt_state,
+                batch, targets, sae_params, ema_params, self.sae_state, opt_state,
                 sae_static, optimizer, iteration, subkey)
 
             if iteration % self.config.log_every == 0:

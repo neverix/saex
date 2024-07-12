@@ -20,12 +20,15 @@ class ActivationBuffer(eqx.Module):
     stat_sharding: jshard.NamedSharding
     mesh: jshard.Mesh
     devices: List[jax.Device]
+    store_twice: bool = False
     _cache: eqx.nn.StateIndex
     _n_valid: eqx.nn.StateIndex
     _index: eqx.nn.StateIndex
 
     def __init__(self, max_samples, n_dimensions, mesh: jshard.Mesh, dtype=jnp.float16):
         self.max_samples = max_samples
+        if self.store_twice:
+            n_dimensions = n_dimensions * 2
         self.n_dimensions = n_dimensions
         self.cache_sharding = jshard.NamedSharding(mesh, P("dp", None, None))
         self._cache = eqx.nn.StateIndex(jnp.empty((mesh.shape["dp"], max_samples, n_dimensions), dtype=dtype,
