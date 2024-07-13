@@ -557,14 +557,24 @@ class SAE(eqx.Module):
         updated = eqx.combine(updated_params, updated_static)
         
         def requantize(x):
-            # simulating 9-bit quantization
+            # simulating 8-bit quantization
             og_shape = x.shape
-            x = x.reshape(-1, 32)
-            scale = jnp.abs(x).max(-1, keepdims=True) / 127
+            is_transpose = x.shape[0] < x.shape[1]
+            if is_transpose:
+                x = x.T
+                og_shape = x.shape
+            x = x.reshape(-1, 32).astype(jnp.float32)
+            zero = x.min(axis=1, keepdims=True)
+            x = x - zero
+            mx = 127
+            scale = x.max(axis=1, keepdims=True) / mx
             quants = x / scale
-            quants = quants.clip(-127, 127).round()
-            
-            return (quants * scale).reshape(og_shape)
+            quants = quants.clip(0, mx).round()
+            x = (quants * scale + zero).reshape(og_shape)
+            if is_transpose:
+                x = x.T
+            return x
+
 
         if self.config.weights_8bit:
             for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
