@@ -10,7 +10,8 @@ for layer_idx in range(len(layers)):
     # cf = 8
     # cf = 14
     cf = 1
-    for s, sae_type in ((8e-6 * cf, "transcoder"),):
+    for s, sae_type in ((2e-5, "residual"), (2e-5, "attn_out")):
+    # for s, sae_type in ((8e-6 * cf, "transcoder"),):
         min_sfc, max_sfc = fn(s), fn(s)
         # min_sfc, max_sfc = fn(1e-5), fn(1e-5)
         min_sfc, max_sfc = min_sfc, min_sfc

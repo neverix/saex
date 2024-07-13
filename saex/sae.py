@@ -31,6 +31,7 @@ class SAEConfig:
 
     expansion_factor: float = 32
     topk_k: Optional[int] = None
+    topk_approx: bool = False
  
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
@@ -256,7 +257,10 @@ class SAE(eqx.Module):
         if self.config.topk_k is not None:
             og_shape = post_relu.shape
             post_relu = post_relu.reshape(-1, post_relu.shape[-1])
-            values, indices = jax.lax.top_k(post_relu, self.config.topk_k)
+            if self.config.topk_approx:
+                values, indices = jax.lax.approx_max_k(post_relu, self.config.topk_k, aggregate_to_topk=True)
+            else:
+                values, indices = jax.lax.top_k(post_relu, self.config.topk_k)
             post_relu = jax.vmap(lambda a, v, i: jnp.zeros_like(a).at[i].set(v))(post_relu, values, indices)
             post_relu = post_relu.reshape(og_shape)
         if self.config.is_gated:
@@ -313,7 +317,7 @@ class SAE(eqx.Module):
         losses = {"reconstruction": reconstruction_loss, "sparsity": sparsity_loss}
         if self.is_gated:
             sg_gated = (lambda x: x) if self.config.anthropic_norm else jax.lax.stop_gradient
-            g_out = (jax.nn.relu(pre_relu) * self.s) @ sg_gated(self.W_dec) + sg_gated(self.b_dec)
+            g_out = ((pre_relu * active) * self.s) @ sg_gated(self.W_dec) + sg_gated(self.b_dec)
             gated_loss = self.reconstruction_loss(g_out, targets).astype(jnp.float32)
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()
