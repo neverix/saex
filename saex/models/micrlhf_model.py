@@ -156,6 +156,7 @@ class MicrlhfModel(object):
                 .apply(lambda x: pz.nn.Sequential([pz.de.TellIntermediate.from_config(tag=f"mlp-in-{layer}"), x, pz.de.TellIntermediate.from_config(tag=f"mlp-out-{layer}")]))
             self._getter = pz.de.CollectingSideOutputs.handling(get_residuals)
             self._value_call = jax.jit(lambda la, inputs: tuple(m.value for m in la(inputs)[1]))
+            self._getter_call = jax.jit(lambda la, inputs: la(inputs))
             self._value = self._getter
             
             replaced = \
@@ -185,11 +186,8 @@ class MicrlhfModel(object):
 
     def eval_loss(self, texts, autoencoder):
         inputs, mask = self.encode_texts(texts)
-        logits, (hidden_states,) = self._getter_call(self._getter, inputs)
-        if isinstance(hidden_states, tuple):
-            hidden_states = hidden_states[0].value.untag("batch", "seq", "embedding").data_array
-        else:
-            hidden_states = hidden_states.value.untag("batch", "seq", "embedding").data_array
+        logits, hidden_states = self._getter_call(self._getter, inputs)
+        hidden_states = hidden_states[0].value.untag("batch", "seq", "embedding").data_array
         sae_params, sae_static = eqx.partition(autoencoder, eqx.is_array)
         logits_reconstructed = self._setter_call(
             sae_static, sae_params, inputs, self._setter, hidden_states)

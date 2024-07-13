@@ -607,7 +607,7 @@ class SAE(eqx.Module):
             # l0=(last_output.activations["pre_relu"] > 0).sum(-1).mean(),
             l0=(state.get(self.avg_l0) / bias_corr).sum(),
             dead=(time_since_fired > self.config.dead_after).mean(),
-            var_explained=jnp.square(((last_input - last_input.mean(axis=0)) / (last_input.std(axis=0) + eps)
+            var_explained=jnp.square(((last_target - last_target.mean(axis=0)) / (last_target.std(axis=0) + eps)
                                       * (last_output.output - last_output.output.mean(axis=0)) / (last_output.output.std(axis=0) + eps)
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
