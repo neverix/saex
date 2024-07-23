@@ -689,7 +689,7 @@ class SAE(eqx.Module):
 
     def restore(self, weights_path: os.PathLike):
         with safetensors.safe_open(weights_path, "flax") as f:
-            for param in ("W_enc", "b_enc", "W_dec", "b_dec", "s", "s_gate", "b_gate"):
+            for param in ("W_enc", "b_enc", "W_dec", "b_dec", "s", "s_gate", "b_gate", "mean_norm", "tgt_mean_norm"):
                 match param:
                     case "s":
                         load_param = "scaling_factor"
@@ -699,6 +699,7 @@ class SAE(eqx.Module):
                     self = eqx.tree_at(lambda s: getattr(s, param), self,
                                     jax.device_put(f.get_tensor(load_param).astype(self.param_dtype if param.startswith("W") else
                                                                                    self.bias_dtype if param.startswith("b") else
+                                                                                   self.mean_norm_dtype if param.endswith("norm") else
                                                                                    self.misc_dtype),
                                                     self.sharding[param]))
                 except safetensors.SafetensorError:
