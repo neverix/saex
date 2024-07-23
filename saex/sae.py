@@ -94,6 +94,7 @@ class SAE(eqx.Module):
     W_dec: jax.Array
     b_dec: jax.Array
     mean_norm: jax.Array
+    tgt_mean_norm: jax.Array
     
     time_since_fired: eqx.nn.StateIndex
     num_steps: eqx.nn.StateIndex
@@ -101,6 +102,7 @@ class SAE(eqx.Module):
     avg_l0: eqx.nn.StateIndex
     activated_buffer: eqx.nn.StateIndex
     ds_mean_norm: eqx.nn.StateIndex
+    ds_tgt_mean_norm: eqx.nn.StateIndex
 
     enc_config: Optional[aqt_config.DotGeneral]
     dec_config: Optional[aqt_config.DotGeneral]
@@ -183,8 +185,10 @@ class SAE(eqx.Module):
                                                             device=state_sharding["activated_buffer"],
                                                             dtype=jnp.float32
                                                             ))
-        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype))
-        self.mean_norm = jnp.array(self.config.min_norm, dtype=self.mean_norm_dtype)
+        self.ds_mean_norm = eqx.nn.StateIndex(jnp.array(1.0, dtype=self.mean_norm_dtype))
+        self.ds_tgt_mean_norm = eqx.nn.StateIndex(jnp.array(1.0, dtype=self.mean_norm_dtype))
+        self.mean_norm = jnp.array(1.0, dtype=self.mean_norm_dtype)
+        self.tgt_mean_norm = jnp.array(1.0, dtype=self.mean_norm_dtype)
         
         if self.config.use_aqt:
             self.enc_config = aqt_config.fully_quantized(fwd_bits=8, bwd_bits=8)
@@ -242,6 +246,14 @@ class SAE(eqx.Module):
             norm_factor = jnp.ones_like(x)
         return x * norm_factor, norm_factor
 
+    def norm_target(self, x: jax.typing.ArrayLike):
+        assert self.config.norm_input in (None, "wes-mean-fixed")
+        if self.config.norm_input == "wes-mean-fixed":
+            norm_factor = (x.shape[-1] ** 0.5) / self.tgt_mean_norm
+        else:
+            norm_factor = jnp.ones_like(x)
+        return x * norm_factor, norm_factor
+
     def encode(self, activations: jax.Array, dot_enc=None):
         inputs, norm_factor = self.norm_input(activations.astype(jnp.float32))
         if self.config.remove_decoder_bias:
@@ -269,21 +281,23 @@ class SAE(eqx.Module):
     def forward(self, activations: jax.Array):
         _, _, _, hidden, norm_factor = self.encode(activations)
         out = hidden @ self.W_dec + self.b_dec
-        return out / norm_factor
+        return out / (norm_factor if self.config.norm_input != "wes-mean-fixed" else ((out.shape[-1] ** 0.5) / (self.tgt_mean_norm)))
 
     def __call__(self, activations: jax.Array, targets: jax.typing.ArrayLike, key: jax.random.PRNGKey = None, state=None):
+        targets, target_norm_factor = self.norm_target(targets)
         if self.config.norm_input == "wes-mean-fixed":
             mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(activations.astype(self.mean_norm_dtype), axis=-1, keepdims=True).mean())
+            target_mean_norm = jnp.maximum(self.config.min_norm, jnp.linalg.norm(targets.astype(self.mean_norm_dtype), axis=-1, keepdims=True).mean())
             if state is not None:
                 # t = state.get(self.num_steps)
                 # state = state.set(self.ds_mean_norm,
                 #                   state.get(self.ds_mean_norm) * (t / (t + 1)) + mean_norm / (t + 1))
                 state = state.set(self.ds_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_mean_norm) * self.config.wes_ema + mean_norm * (1 - self.config.wes_ema)).astype(self.mean_norm_dtype))
+                state = state.set(self.ds_tgt_mean_norm, jnp.maximum(self.config.min_norm, state.get(self.ds_tgt_mean_norm) * self.config.wes_ema + target_mean_norm * (1 - self.config.wes_ema)).astype(self.mean_norm_dtype))
 
         dot_enc, dot_dec = self.dot_general(key)
 
         activations, pre_relu, post_relu, hidden, norm_factor = self.encode(activations, dot_enc=dot_enc)
-        targets = targets * norm_factor
         active = hidden != 0
         if state is not None:
             state = state.set(self.time_since_fired,
@@ -318,12 +332,12 @@ class SAE(eqx.Module):
             losses = {**losses, "gated": gated_loss}
             loss = loss + gated_loss.mean()
         if state is not None:  # we can only tell if a neuron is dead if we know if it was alive in the first place
-            death_loss = self.compute_death_loss(state, targets, out, pre_relu, norm_factor).astype(jnp.float32)
+            death_loss = self.compute_death_loss(state, targets, out, pre_relu).astype(jnp.float32)
             losses = {**losses, "death": death_loss}
             loss = loss + death_loss.mean() * self.config.death_penalty_coefficient
         loss = self.scaler.scale(loss)
         output = SAEOutput(
-            output=out / norm_factor,
+            output=out / target_norm_factor,
             loss=loss,
             losses=losses,
             activations={"pre_relu": pre_relu, "hidden": hidden},
@@ -369,7 +383,7 @@ class SAE(eqx.Module):
         else:
             raise ValueError(f"Unknown reconstruction loss type: \"{self.config.reconstruction_loss_type}\"")
     
-    def compute_death_loss(self, state, targets, reconstructions, pre_relu, norm_factor, eps=1e-10):
+    def compute_death_loss(self, state, targets, reconstructions, pre_relu, eps=1e-10):
         dead = state.get(self.time_since_fired) > self.config.dead_after
         if self.get_death_penalty_threshold(state) is not None:
             dead = dead | (
@@ -612,6 +626,7 @@ class SAE(eqx.Module):
                                       ).mean(0)).mean(),
             max_time_since_fired=time_since_fired.max(),
             mean_norm=state.get(self.ds_mean_norm),
+            target_mean_norm=state.get(self.ds_tgt_mean_norm),
             **{f"{param_name}_norm": jnp.linalg.norm(getattr(self, param_name)) for param_name in ("W_enc", "W_dec", "b_enc", "b_dec")},
         )
     
@@ -640,6 +655,7 @@ class SAE(eqx.Module):
                 "s_gate": P(None),
                 "b_gate": P(None),
                 "mean_norm": P(),
+                "tgt_mean_norm": P(),
             }, {
                 "time_since_fired": P(None),
                 "num_steps": P(),
@@ -647,6 +663,7 @@ class SAE(eqx.Module):
                 "avg_l0": P(None),
                 "activated_buffer": P(None, None),
                 "ds_mean_norm": P(),
+                "ds_tgt_mean_norm": P(),
             }
         else:
             spec, state_spec = {
@@ -658,6 +675,7 @@ class SAE(eqx.Module):
                 "s_gate": P("mp"),
                 "b_gate": P("mp"),
                 "mean_norm": P(),
+                "tgt_mean_norm": P(),
             }, {
                 "time_since_fired": P("mp"),
                 "num_steps": P(),
@@ -665,6 +683,7 @@ class SAE(eqx.Module):
                 "avg_l0": P("mp"),
                 "activated_buffer": P(None, "mp"),
                 "ds_mean_norm": P(),
+                "ds_tgt_mean_norm": P(),
             }
         return spec, state_spec
 
@@ -698,6 +717,7 @@ class SAE(eqx.Module):
             "s_gate": self.s_gate,
             "b_gate": self.b_gate,
             "mean_norm": self.mean_norm,
+            "tgt_mean_norm": self.tgt_mean_norm,
         }
         state_dict = {k: v.astype(save_dtype) for k, v in state_dict.items()}
         save_file(state_dict, weights_path)
