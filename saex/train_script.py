@@ -42,15 +42,20 @@ def train_main(configs: Union[BufferTrainerConfig, List[BufferTrainerConfig]]):
         for i in chain(trainer_iterators, [cacher_iterator]):
             next(i)
         while True:
+            import time
+            time_start = time.time()
             try:
                 batch = cacher_iterator.send(False)
             except StopIteration:
                 batch = None
+            time_end = time.time()
             for iterator in trainer_iterators:
+                time_start = time.time()
                 try:
                     iterator.send(batch)
                 except StopIteration:
                     continue
+                time_end = time.time()
             if batch is None:
                 break
             del batch

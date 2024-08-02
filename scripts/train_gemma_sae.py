@@ -18,7 +18,7 @@ def train(
     cache_size = 2**16,
     cache_batch_size = 256,
     cache_ratio=1.0,
-    batch_size = 2048,
+    batch_size = 2**16,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
     # save_steps=2500,
@@ -150,7 +150,7 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
           train_steps=150_000,
         #   push_to_hub=("nev/gemma-2b-saex-test", f"l{layer}-{sae_type}-test-run-6"),
-          push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-1"),
+          push_to_hub=("nev/gemma-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-sweep-0"),
           restore=restore,
           sae_type=sae_type,
           )

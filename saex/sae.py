@@ -567,10 +567,10 @@ class SAE(eqx.Module):
             if is_transpose:
                 x = x.T
                 og_shape = x.shape
-            x = x.reshape(-1, 32).astype(jnp.float32)
+            x = x.reshape(-1, 16).astype(jnp.float32)
             zero = x.min(axis=1, keepdims=True)
             x = x - zero
-            mx = 127
+            mx = 255
             scale = x.max(axis=1, keepdims=True) / mx
             quants = x / scale
             quants = quants.clip(0, mx).round()
