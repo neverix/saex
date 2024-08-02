@@ -15,6 +15,6 @@ for layer_idx in range(len(layers)):
         # min_sfc, max_sfc = fn(1e-5), fn(1e-5)
         min_sfc, max_sfc = min_sfc, min_sfc * 3
         os.system(f'python -m scripts.train_gemma_sae --layer {layer} --restore "{restore}" '
-                f'--min_sfc {min_sfc} --max_sfc {max_sfc} --n_train=4 --sae_type="{sae_type}"')
+                f'--min_sfc {min_sfc} --max_sfc {max_sfc} --n_train=1 --sae_type="{sae_type}"')
 
-# nohup poetry run python train_phis.py &
+# rm -rf wandb/ nohup.out; pkill -SIGINT -f gemma; sleep 5; nohup python train_gemmas.py & tail -F nohup.out
