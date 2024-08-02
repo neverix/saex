@@ -31,7 +31,7 @@ class SAEConfig:
 
     expansion_factor: float = 32
     topk_k: Optional[int] = None
-    topk_approx: bool = False
+    topk_approx: Optional[float] = None
  
     encoder_bias_init_mean: float = 0.0
     use_encoder_bias: bool = False
@@ -269,8 +269,8 @@ class SAE(eqx.Module):
         if self.config.topk_k is not None:
             og_shape = post_relu.shape
             post_relu = post_relu.reshape(-1, post_relu.shape[-1])
-            if self.config.topk_approx:
-                values, indices = jax.lax.approx_max_k(post_relu, self.config.topk_k, aggregate_to_topk=True)
+            if self.config.topk_approx is not None:
+                values, indices = jax.lax.approx_max_k(post_relu, self.config.topk_k, aggregate_to_topk=True, recall_target=self.config.topk_approx)
             else:
                 values, indices = jax.lax.top_k(post_relu, self.config.topk_k)
             post_relu = jax.vmap(lambda a, v, i: jnp.zeros_like(a).at[i].set(v))(post_relu, values, indices)
@@ -581,10 +581,10 @@ class SAE(eqx.Module):
             if is_transpose:
                 x = x.T
                 og_shape = x.shape
-            x = x.reshape(-1, 32).astype(jnp.float32)
+            x = x.reshape(-1, 16).astype(jnp.bfloat16)
             zero = x.min(axis=1, keepdims=True)
             x = x - zero
-            mx = 127
+            mx = 255
             scale = x.max(axis=1, keepdims=True) / mx
             quants = x / scale
             quants = quants.clip(0, mx).round()
