@@ -18,7 +18,7 @@ def train(
     cache_size = 2**16,
     cache_batch_size = 256,
     cache_ratio=1.0,
-    batch_size = 2**16,
+    batch_size = 2048,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
     # save_steps=2500,
