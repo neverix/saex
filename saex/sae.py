@@ -577,18 +577,34 @@ class SAE(eqx.Module):
         def requantize(x):
             # simulating 8-bit quantization
             og_shape = x.shape
+            og_dtype = x.dtype
             is_transpose = x.shape[0] < x.shape[1]
             if is_transpose:
                 x = x.T
                 og_shape = x.shape
+            # x = x.reshape(-1, 16).astype(jnp.bfloat16)
             x = x.reshape(-1, 16).astype(jnp.bfloat16)
-            zero = x.min(axis=1, keepdims=True)
-            x = x - zero
-            mx = 255
-            scale = x.max(axis=1, keepdims=True) / mx
-            quants = x / scale
-            quants = quants.clip(0, mx).round()
-            x = (quants * scale + zero).reshape(og_shape)
+            # x = x.reshape(-1, 8).astype(jnp.bfloat16)
+            if True:
+                x_f32 = x.astype(jnp.float32)
+                zero = x_f32.min(axis=1, keepdims=True).astype(jnp.bfloat16).astype(jnp.float32)
+                x_f32 = x_f32 - zero
+                # don't look at the float32, this will be an efficient kernel!
+                mx = 255
+                scale = (x_f32 / mx).astype(jnp.float16).astype(jnp.float32).max(axis=1, keepdims=True)
+                quants = x_f32 / scale
+                quants = quants.clip(0, mx).round().astype(jnp.float32)
+                # this too i guess
+                x = (quants.astype(jnp.float32) * scale.astype(jnp.float32) + zero.astype(jnp.float32)).reshape(og_shape).astype(og_dtype)
+            else:
+                # mx = 127.5
+                # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+                # quants = (x / scale).round().clip(-128, 127)
+                # x = (quants * scale).reshape(og_shape)
+                mx = 63.5
+                scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+                quants = (x / scale).round().clip(-64, 63)
+                x = (quants * scale).reshape(og_shape)
             if is_transpose:
                 x = x.T
             return x
