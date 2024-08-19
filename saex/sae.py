@@ -574,6 +574,19 @@ class SAE(eqx.Module):
             updated_params, state, opt_state)
         updated = eqx.combine(updated_params, updated_static)
         
+        def hadamard_for(x):
+            n = x.shape[-1]
+
+            if n & (n - 1) != 0:
+                raise ValueError("n must be a power of 2")
+            
+            H = jnp.array([[1, 1], [1, -1]], dtype=x.dtype) / (2 ** -0.5)
+            
+            while H.shape[0] < n:
+                H = jnp.kron(H, jnp.array([[1, 1], [1, -1]])) / (2 ** -0.5)
+            
+            return H
+
         def requantize(x):
             # simulating 8-bit quantization
             og_shape = x.shape
@@ -582,9 +595,7 @@ class SAE(eqx.Module):
             if is_transpose:
                 x = x.T
                 og_shape = x.shape
-            # x = x.reshape(-1, 16).astype(jnp.bfloat16)
-            x = x.reshape(-1, 16).astype(jnp.bfloat16)
-            # x = x.reshape(-1, 8).astype(jnp.bfloat16)
+            x = x.reshape(-1, 16)
             if True:
                 x_f32 = x.astype(jnp.float32)
                 zero = x_f32.min(axis=1, keepdims=True).astype(jnp.bfloat16).astype(jnp.float32)

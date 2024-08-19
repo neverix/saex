@@ -5,8 +5,8 @@ for layer_idx in range(len(layers)):
     restore = None
     fn = lambda x: x
     cf = 1
-    s, sae_type = 2e-5, "residual"
-    for use_8bit in (False, True)[1:]:
+    s, sae_type = 6e-5, "residual"
+    for use_8bit in (False, True):
         min_sfc, max_sfc = fn(s), fn(s)
         min_sfc, max_sfc = min_sfc, min_sfc
         os.system(f'python -m scripts.train_gemma2_sae --layer {layer} --restore "{restore}" '
