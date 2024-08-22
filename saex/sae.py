@@ -491,6 +491,7 @@ class SAE(eqx.Module):
         
         if self.config.project_updates_from_dec and not self.config.anthropic_norm:
             updates = self.project(updates)
+
         updated = eqx.apply_updates(self, updates)
 
         w_dec_selector = lambda x: x.W_dec
@@ -573,53 +574,6 @@ class SAE(eqx.Module):
             (lambda *a: a, resample),
             updated_params, state, opt_state)
         updated = eqx.combine(updated_params, updated_static)
-        
-        def hadamard_for(x):
-            n = x.shape[-1]
-
-            if n & (n - 1) != 0:
-                raise ValueError("n must be a power of 2")
-            
-            H = jnp.array([[1, 1], [1, -1]], dtype=x.dtype) / (2 ** -0.5)
-            
-            while H.shape[0] < n:
-                H = jnp.kron(H, jnp.array([[1, 1], [1, -1]])) / (2 ** -0.5)
-            
-            return H
-
-        def requantize(x):
-            # simulating 8-bit quantization
-            og_shape = x.shape
-            og_dtype = x.dtype
-            is_transpose = x.shape[0] < x.shape[1]
-            if is_transpose:
-                x = x.T
-                og_shape = x.shape
-            x = x.reshape(-1, 16)
-            if True:
-                x_f32 = x.astype(jnp.float32)
-                zero = x_f32.min(axis=1, keepdims=True).astype(jnp.bfloat16).astype(jnp.float32)
-                x_f32 = x_f32 - zero
-                # don't look at the float32, this will be an efficient kernel!
-                mx = 255
-                scale = (x_f32 / mx).astype(jnp.float16).astype(jnp.float32).max(axis=1, keepdims=True)
-                quants = x_f32 / scale
-                quants = quants.clip(0, mx).round().astype(jnp.float32)
-                # this too i guess
-                x = (quants.astype(jnp.float32) * scale.astype(jnp.float32) + zero.astype(jnp.float32)).reshape(og_shape).astype(og_dtype)
-            else:
-                # mx = 127.5
-                # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
-                # quants = (x / scale).round().clip(-128, 127)
-                # x = (quants * scale).reshape(og_shape)
-                mx = 63.5
-                scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
-                quants = (x / scale).round().clip(-64, 63)
-                x = (quants * scale).reshape(og_shape)
-            if is_transpose:
-                x = x.T
-            return x
-
 
         if self.config.weights_8bit:
             for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
@@ -789,3 +743,65 @@ class SAE(eqx.Module):
                 repo_id=repo,
                 repo_type="model"
             )
+
+
+
+def hadamard_for(x):
+    n = x.shape[-1]
+
+    if n & (n - 1) != 0:
+        from math import ceil, log2
+        n = 2 ** ceil(log2(n))
+        x = jnp.pad(x, ((0, 0), (0, n - x.shape[-1])))
+    
+    H = jnp.array([[1, 1], [1, -1]], dtype=x.dtype)
+    
+    while H.shape[0] < n:
+        H = jnp.kron(H, jnp.array([[1, 1], [1, -1]]))
+    
+    return H / (2 ** (-0.5 * np.log2(n)))
+
+def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True):
+    # simulating 8-bit quantization
+    og_dtype = x.dtype
+    is_transpose = x.shape[0] < x.shape[1] and do_transpose
+    if is_transpose:
+        x = x.T
+    og_shape = x.shape
+    if use_hadamard:
+        og_shape_ = x.shape
+        x = x.astype(jnp.float32)
+        H = hadamard_for(x)
+        x = jnp.pad(x, ((0, 0), (0, H.shape[0] - x.shape[1])))
+        x = x @ H
+        og_shape = x.shape
+    x = x.reshape(-1, 16)
+    if True:
+        x_f32 = x.astype(jnp.float32)
+        zero = x_f32.min(axis=1, keepdims=True).astype(jnp.float16 if offset_f16 else jnp.bfloat16).astype(jnp.float32)
+        x_f32 = x_f32 - zero
+        # don't look at the float32, this will be an efficient kernel!
+        mx = 255
+        scale = (x_f32 / mx).astype(jnp.float16 if scale_f16 else jnp.bfloat16).astype(jnp.float32).max(axis=1, keepdims=True)
+        quants = x_f32 / scale
+        quants = quants.clip(0, mx).round().astype(jnp.float32)
+        # this too i guess
+        x = (quants.astype(jnp.float32) * scale.astype(jnp.float32) + zero.astype(jnp.float32)).reshape(og_shape)
+    else:
+        # mx = 127.5
+        # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+        # quants = (x / scale).round().clip(-128, 127)
+        # x = (quants * scale).reshape(og_shape)
+        mx = 63.5
+        scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+        quants = (x / scale).round().clip(-64, 63)
+        x = (quants * scale).reshape(og_shape)
+    if use_hadamard:
+        x = x.astype(jnp.float32)
+        x = x.at[..., og_shape_[1]:].set(0.0)
+        x = x @ H
+        x = x[:og_shape_[0], :og_shape_[1]]
+    if is_transpose:
+        x = x.T
+    x = x.astype(og_dtype)
+    return x

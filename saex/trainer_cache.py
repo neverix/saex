@@ -21,7 +21,7 @@ from .buffer import ActivationBuffer
 from .haver import ModelHaver, SAEHaver
 from .iterable_dataset import IterableDatasetConfig, create_iterable_dataset
 from .models.transformers_model import TransformersModelConfig
-from .sae import SAE, SAEConfig
+from .sae import SAE, SAEConfig, requantize
 from .optim import momentumless_adam
 
 
@@ -126,7 +126,7 @@ class BufferCacher(ModelHaver):
                         self.buffer_state, n_tokens = self.buffer(activations, mask, self.buffer_state)
 
                     accumulated += n_tokens
-                    tokens_processed += n_tokens
+                    tokens_processed += int(n_tokens)
 
                     if self.config.use_wandb and self.config.log_texts:
                         wandb.log({"texts": wandb.Table(columns=["text"], data=[[x] for x in texts])}, step=iteration)
@@ -266,6 +266,9 @@ class BufferTrainer(SAEHaver):
             if not self.config.no_update:
                 k1, k2 = jax.random.split(key)
                 grad = sae.update_gradients(grad, sae_state, k1)
+                if self.config.sae_config.weights_8bit:
+                    for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
+                        grad = eqx.tree_at(selector, grad, replace_fn=partial(requantize, do_transpose=True, use_hadamard=True))
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
                                                               batch, targets, sae_output, step, k2)
