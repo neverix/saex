@@ -762,7 +762,7 @@ def hadamard_for(x):
     
     return H / (n ** 0.5)
 
-def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True, highlevel=False):
+def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True, highlevel=False, do_log=False):
     # simulating 8-bit quantization
     og_dtype = x.dtype
     # jax.debug.print("Pre mean: {}, std: {}", x.mean(), x.std())
@@ -771,7 +771,6 @@ def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale
         x = x.T
     og_shape = x.shape
     if use_hadamard:
-        jax.debug.print("Hadamard")
         og_shape_ = x.shape
         x = x.astype(jnp.float32)
         H = hadamard_for(x)
@@ -781,24 +780,39 @@ def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale
     x = x.reshape(-1, 16)
     if True:
         x_f32 = x.astype(jnp.float32)
+        if do_log:
+            jax.debug.print("Before norm: {}", jnp.linalg.norm(x_f32))
         zero = x_f32.min(axis=1, keepdims=True).astype(jnp.float16 if offset_f16 else jnp.bfloat16).astype(jnp.float32)
         # jax.debug.print("Zero mean: {}, std: {}", zero.mean(), zero.std())
         x_f32 = x_f32 - zero
+        if do_log:
+            jax.debug.print("After zero norm: {}", jnp.linalg.norm(x_f32))
         # don't look at the float32, this will be an efficient kernel!
         mx = 255
         if highlevel:
             xl = x_f32.reshape(-1, 256)
             scale_highlevel = xl.astype(jnp.float32).max(axis=-1, keepdims=True)
-            x_f32 = (xl / scale_highlevel).reshape(x_f32.shape)
+            x_f32 = jnp.nan_to_num(xl / scale_highlevel).reshape(x_f32.shape)
+            if do_log:
+                jax.debug.print("After highlevel norm: {}", jnp.linalg.norm(x_f32))
+                jax.debug.print("Highlevel scale norm: {}, min: {}, max: {}", jnp.linalg.norm(scale_highlevel), scale_highlevel.min(), scale_highlevel.max())
         scale = (x_f32 / mx).astype(jnp.float16 if scale_f16 else jnp.bfloat16).astype(jnp.float32).max(axis=1, keepdims=True)
-        # jax.debug.print("Scale mean: {}, std: {}", scale.mean(), scale.std())
-        quants = x_f32 / scale
+        quants = jnp.nan_to_num(x_f32 / scale)
+        if do_log:
+            jax.debug.print("After scale norm: {}", jnp.linalg.norm(x_f32))
+            jax.debug.print("Scale norm: {}, min: {}, max: {}", jnp.linalg.norm(scale), scale.min(), scale.max())
         quants = quants.clip(0, mx).round().astype(jnp.float32)
         # this too i guess
         scaled = quants.astype(jnp.float32) * scale.astype(jnp.float32)
-        if highlevel:
-            scaled = (scaled.reshape(xl.shape) * scale_highlevel).reshape(scaled.shape)
+        if do_log:
+            jax.debug.print("Scaled norm: {}", jnp.linalg.norm(scaled))
         x = (scaled + zero.astype(jnp.float32)).reshape(og_shape)
+        if do_log:
+            jax.debug.print("Zero+scale norm: {}", jnp.linalg.norm(x))
+        if highlevel:
+            x = (x.reshape(xl.shape) * scale_highlevel).reshape(x.shape)
+            if do_log:
+                jax.debug.print("Highleveled norm: {}", jnp.linalg.norm(x))
     else:
         # mx = 127.5
         # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx

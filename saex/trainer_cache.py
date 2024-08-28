@@ -268,7 +268,12 @@ class BufferTrainer(SAEHaver):
                 grad = sae.update_gradients(grad, sae_state, k1)
                 if self.config.sae_config.weights_8bit:
                     for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
-                        grad = eqx.tree_at(selector, grad, replace_fn=partial(requantize, do_transpose=True, use_hadamard=False, offset_f16=True, scale_f16=True))
+                        grad = eqx.tree_at(selector, grad,
+                                           replace_fn=partial(requantize,
+                                                              do_transpose=True, use_hadamard=False,
+                                                              offset_f16=True, scale_f16=True,
+                                                              highlevel=False,
+                                                              do_log=False))
                 updates, opt_state = optimizer.update(grad, opt_state, sae_params)
                 sae, sae_state, opt_state = sae.apply_updates(updates, sae_state, opt_state,
                                                               batch, targets, sae_output, step, k2)
