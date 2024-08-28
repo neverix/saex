@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
+from functools import partial
 
 import equinox as eqx
 import jax
@@ -577,7 +578,7 @@ class SAE(eqx.Module):
 
         if self.config.weights_8bit:
             for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
-                updated = eqx.tree_at(selector, updated, replace_fn=requantize)
+                updated = eqx.tree_at(selector, updated, replace_fn=partial(requantize))
 
         return updated, state, opt_state
     
@@ -759,16 +760,18 @@ def hadamard_for(x):
     while H.shape[0] < n:
         H = jnp.kron(H, jnp.array([[1, 1], [1, -1]]))
     
-    return H / (2 ** (-0.5 * np.log2(n)))
+    return H / (n ** 0.5)
 
-def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True):
+def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True, highlevel=False):
     # simulating 8-bit quantization
     og_dtype = x.dtype
+    # jax.debug.print("Pre mean: {}, std: {}", x.mean(), x.std())
     is_transpose = x.shape[0] < x.shape[1] and do_transpose
     if is_transpose:
         x = x.T
     og_shape = x.shape
     if use_hadamard:
+        jax.debug.print("Hadamard")
         og_shape_ = x.shape
         x = x.astype(jnp.float32)
         H = hadamard_for(x)
@@ -779,14 +782,23 @@ def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale
     if True:
         x_f32 = x.astype(jnp.float32)
         zero = x_f32.min(axis=1, keepdims=True).astype(jnp.float16 if offset_f16 else jnp.bfloat16).astype(jnp.float32)
+        # jax.debug.print("Zero mean: {}, std: {}", zero.mean(), zero.std())
         x_f32 = x_f32 - zero
         # don't look at the float32, this will be an efficient kernel!
         mx = 255
+        if highlevel:
+            xl = x_f32.reshape(-1, 256)
+            scale_highlevel = xl.astype(jnp.float32).max(axis=-1, keepdims=True)
+            x_f32 = (xl / scale_highlevel).reshape(x_f32.shape)
         scale = (x_f32 / mx).astype(jnp.float16 if scale_f16 else jnp.bfloat16).astype(jnp.float32).max(axis=1, keepdims=True)
+        # jax.debug.print("Scale mean: {}, std: {}", scale.mean(), scale.std())
         quants = x_f32 / scale
         quants = quants.clip(0, mx).round().astype(jnp.float32)
         # this too i guess
-        x = (quants.astype(jnp.float32) * scale.astype(jnp.float32) + zero.astype(jnp.float32)).reshape(og_shape)
+        scaled = quants.astype(jnp.float32) * scale.astype(jnp.float32)
+        if highlevel:
+            scaled = (scaled.reshape(xl.shape) * scale_highlevel).reshape(scaled.shape)
+        x = (scaled + zero.astype(jnp.float32)).reshape(og_shape)
     else:
         # mx = 127.5
         # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
@@ -803,5 +815,6 @@ def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale
         x = x[:og_shape_[0], :og_shape_[1]]
     if is_transpose:
         x = x.T
+    # jax.debug.print("Post mean: {}, std: {}", x.mean(), x.std())
     x = x.astype(og_dtype)
     return x
