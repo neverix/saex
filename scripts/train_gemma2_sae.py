@@ -18,7 +18,7 @@ def train(
     cache_size = 2**16,
     cache_batch_size = 256,
     cache_ratio=1.0,
-    batch_size = 2048,
+    batch_size = 16384,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
     # save_steps=2500,
@@ -33,6 +33,7 @@ def train(
     death_penalty_threshold=9e-5,
     push_to_hub=None,
     ema=None,
+    use_8bit=None,
 ):
     n_features = 2304
 
@@ -82,18 +83,15 @@ def train(
                 buffer_size=2_000,
                 sparsity_tracking_epsilon=0.1,
                 is_gated=is_gated,
+                # param_dtype="float32",
                 param_dtype="bfloat16",
                 bias_dtype="float32",
-                # bias_dtype="bfloat16",
-                misc_dtype="bfloat16",
                 # misc_dtype="float32",
-                # param_dtype="float16",
-                # param_dtype="float32",
+                misc_dtype="bfloat16",
                 restrict_dec_norm=None,
                 project_grads_from_dec=False,
                 project_updates_from_dec=False,
-                weights_8bit=False,
-                # weights_8bit=True,
+                weights_8bit=use_8bit,
                 use_aqt=False,
                 topk_k=None,
                 # topk_k=128,
@@ -142,7 +140,7 @@ def train(
     train_main(configs)
 
 
-def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5e-5, n_train=4, sae_type="residual"):
+def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5e-5, n_train=4, sae_type="residual", use_8bit=False):
     sfcs = np.linspace(min_sfc, max_sfc, n_train)
     is_recip = False
     is_gated = True
@@ -151,9 +149,9 @@ def main(layer: int = 12, restore: Optional[str] = None, min_sfc=2e-5, max_sfc=5
           n_devices=4, use_recip=is_recip,
         #   death_penalty_threshold="auto",
           death_penalty_threshold=5e-6,  # <= 70 (L0) / 90k (features)
-          train_steps=150_000,
-          push_to_hub=("nev/gemma2-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-0"),
-
+          train_steps=400_000,
+        #   push_to_hub=("nev/gemma2-2b-saex-test", f"it-l{layer}-{sae_type}-test-run-0"),
+          use_8bit=use_8bit,
           restore=restore,
           sae_type=sae_type,
           )

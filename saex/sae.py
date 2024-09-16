@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
 from typing import Dict, Literal, NamedTuple, Optional, Tuple, Union
+from functools import partial
 
 import equinox as eqx
 import jax
@@ -491,6 +492,7 @@ class SAE(eqx.Module):
         
         if self.config.project_updates_from_dec and not self.config.anthropic_norm:
             updates = self.project(updates)
+
         updated = eqx.apply_updates(self, updates)
 
         w_dec_selector = lambda x: x.W_dec
@@ -573,30 +575,10 @@ class SAE(eqx.Module):
             (lambda *a: a, resample),
             updated_params, state, opt_state)
         updated = eqx.combine(updated_params, updated_static)
-        
-        def requantize(x):
-            # simulating 8-bit quantization
-            og_shape = x.shape
-            is_transpose = x.shape[0] < x.shape[1]
-            if is_transpose:
-                x = x.T
-                og_shape = x.shape
-            x = x.reshape(-1, 16).astype(jnp.bfloat16)
-            zero = x.min(axis=1, keepdims=True)
-            x = x - zero
-            mx = 255
-            scale = x.max(axis=1, keepdims=True) / mx
-            quants = x / scale
-            quants = quants.clip(0, mx).round()
-            x = (quants * scale + zero).reshape(og_shape)
-            if is_transpose:
-                x = x.T
-            return x
-
 
         if self.config.weights_8bit:
             for selector in (lambda s: s.W_enc, lambda s: s.W_dec):
-                updated = eqx.tree_at(selector, updated, replace_fn=requantize)
+                updated = eqx.tree_at(selector, updated, replace_fn=partial(requantize))
 
         return updated, state, opt_state
     
@@ -762,3 +744,91 @@ class SAE(eqx.Module):
                 repo_id=repo,
                 repo_type="model"
             )
+
+
+
+def hadamard_for(x):
+    n = x.shape[-1]
+
+    if n & (n - 1) != 0:
+        from math import ceil, log2
+        n = 2 ** ceil(log2(n))
+        x = jnp.pad(x, ((0, 0), (0, n - x.shape[-1])))
+    
+    H = jnp.array([[1, 1], [1, -1]], dtype=x.dtype)
+    
+    while H.shape[0] < n:
+        H = jnp.kron(H, jnp.array([[1, 1], [1, -1]]))
+    
+    return H / (n ** 0.5)
+
+def requantize(x, do_transpose=True, use_hadamard=False, offset_f16=False, scale_f16=True, highlevel=False, do_log=False):
+    # simulating 8-bit quantization
+    og_dtype = x.dtype
+    # jax.debug.print("Pre mean: {}, std: {}", x.mean(), x.std())
+    is_transpose = x.shape[0] < x.shape[1] and do_transpose
+    if is_transpose:
+        x = x.T
+    og_shape = x.shape
+    if use_hadamard:
+        og_shape_ = x.shape
+        x = x.astype(jnp.float32)
+        H = hadamard_for(x)
+        x = jnp.pad(x, ((0, 0), (0, H.shape[0] - x.shape[1])))
+        x = x @ H
+        og_shape = x.shape
+    x = x.reshape(-1, 16)
+    if True:
+        x_f32 = x.astype(jnp.float32)
+        if do_log:
+            jax.debug.print("Before norm: {}", jnp.linalg.norm(x_f32))
+        zero = x_f32.min(axis=1, keepdims=True).astype(jnp.float16 if offset_f16 else jnp.bfloat16).astype(jnp.float32)
+        # jax.debug.print("Zero mean: {}, std: {}", zero.mean(), zero.std())
+        x_f32 = x_f32 - zero
+        if do_log:
+            jax.debug.print("After zero norm: {}", jnp.linalg.norm(x_f32))
+        # don't look at the float32, this will be an efficient kernel!
+        mx = 255
+        if highlevel:
+            xl = x_f32.reshape(-1, 256)
+            scale_highlevel = xl.astype(jnp.float32).max(axis=-1, keepdims=True)
+            x_f32 = jnp.nan_to_num(xl / scale_highlevel).reshape(x_f32.shape)
+            if do_log:
+                jax.debug.print("After highlevel norm: {}", jnp.linalg.norm(x_f32))
+                jax.debug.print("Highlevel scale norm: {}, min: {}, max: {}", jnp.linalg.norm(scale_highlevel), scale_highlevel.min(), scale_highlevel.max())
+        scale = (x_f32 / mx).astype(jnp.float16 if scale_f16 else jnp.bfloat16).astype(jnp.float32).max(axis=1, keepdims=True)
+        quants = jnp.nan_to_num(x_f32 / scale)
+        if do_log:
+            jax.debug.print("After scale norm: {}", jnp.linalg.norm(x_f32))
+            jax.debug.print("Scale norm: {}, min: {}, max: {}", jnp.linalg.norm(scale), scale.min(), scale.max())
+        quants = quants.clip(0, mx).round().astype(jnp.float32)
+        # this too i guess
+        scaled = quants.astype(jnp.float32) * scale.astype(jnp.float32)
+        if do_log:
+            jax.debug.print("Scaled norm: {}", jnp.linalg.norm(scaled))
+        x = (scaled + zero.astype(jnp.float32)).reshape(og_shape)
+        if do_log:
+            jax.debug.print("Zero+scale norm: {}", jnp.linalg.norm(x))
+        if highlevel:
+            x = (x.reshape(xl.shape) * scale_highlevel).reshape(x.shape)
+            if do_log:
+                jax.debug.print("Highleveled norm: {}", jnp.linalg.norm(x))
+    else:
+        # mx = 127.5
+        # scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+        # quants = (x / scale).round().clip(-128, 127)
+        # x = (quants * scale).reshape(og_shape)
+        mx = 63.5
+        scale = jnp.abs(x).max(axis=1, keepdims=True) / mx
+        quants = (x / scale).round().clip(-64, 63)
+        x = (quants * scale).reshape(og_shape)
+    if use_hadamard:
+        x = x.astype(jnp.float32)
+        x = x.at[..., og_shape_[1]:].set(0.0)
+        x = x @ H
+        x = x[:og_shape_[0], :og_shape_[1]]
+    if is_transpose:
+        x = x.T
+    # jax.debug.print("Post mean: {}, std: {}", x.mean(), x.std())
+    x = x.astype(og_dtype)
+    return x
