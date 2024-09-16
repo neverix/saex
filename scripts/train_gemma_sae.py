@@ -21,8 +21,7 @@ def train(
     batch_size = 2048,
     max_seq_len = 128,
     sparsity_coefficients=[4e-6],
-    # save_steps=2500,
-    save_steps=250_000,
+    save_steps=1e20,
     eval_loss_every=100,
     restore = False,
     wandb_entity = "neverix",
@@ -113,7 +112,7 @@ def train(
             model_config=MicrlhfModelConfig(
                 tokenizer_path="alpindale/gemma-2b",
                 # gguf_path="weights/gemma-2b.gguf",
-                gguf_path="../micrlhf-progress/models/gemma-2b-it.gguf",
+                gguf_path="weights/gemma-2b-it.gguf",
                 device_map=f"auto:mp={mp_devices}" if n_devices > 1 else "tpu:0",
                 use_flash=False,
                 layer=layer,

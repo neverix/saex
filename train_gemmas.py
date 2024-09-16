@@ -1,5 +1,5 @@
 import os
-layers = [0]
+layers = [17]
 for layer_idx in range(len(layers)):
     layer = layers[layer_idx]
     restore = None  # if layer_idx == 0 else f"weights/phi-l{layers[layer_idx-1]}-gated.safetensors"
@@ -10,7 +10,7 @@ for layer_idx in range(len(layers)):
     # cf = 14
     cf = 1
     # for s, sae_type in ((2e-5, "residual"), (2e-5, "attn_out")):
-    for s, sae_type in ((5e-6 * cf, "transcoder"),):
+    for s, sae_type in ((5e-6 * cf, "transcoder"), (2e-5, "residual"), (2e-5, "attn_out")):
         min_sfc, max_sfc = fn(s), fn(s)
         # min_sfc, max_sfc = fn(1e-5), fn(1e-5)
         min_sfc, max_sfc = min_sfc, min_sfc * 3
